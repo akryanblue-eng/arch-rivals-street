@@ -1,3 +1,18 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Unity
+/Library/
+/Temp/
+/Obj/
+/Build/
+/Builds/
+/Logs/
+/UserSettings/
+/MemoryCaptures/
+*.csproj
+*.sln
+.vs/
+*.user
+crashlytics-build.properties
