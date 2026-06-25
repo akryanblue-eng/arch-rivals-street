@@ -195,7 +195,8 @@ def run_probe(
 
         unity_version = read_unity_version(workdir) if structure_ok else None
 
-        if structure_ok and unity_path:
+        boot_attempted = bool(structure_ok and unity_path)
+        if boot_attempted:
             log_path = os.path.join(tempfile.gettempdir(), f"unity_boot_{run_id}.log")
             unity_result = unity_boot(unity_path, workdir, log_path)
         else:
@@ -220,6 +221,7 @@ def run_probe(
 
         observations = {
             "unity_structure_ok": structure_ok,
+            "unity_boot_attempted": boot_attempted,
             "unity_boot_ok": unity_result.passed,
         }
 

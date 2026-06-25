@@ -77,4 +77,5 @@ def test_run_probe_against_this_actual_repo_has_placeholder_structure_but_cannot
     """
     report = run_probe(".", "HEAD")
     assert report.observations["unity_structure_ok"] is True
+    assert report.observations["unity_boot_attempted"] is False
     assert report.observations["unity_boot_ok"] is False

@@ -27,13 +27,14 @@
     },
     "environment": {
       "type": "object",
-      "required": ["fresh_clone", "isolated", "runner", "os"],
+      "required": ["fresh_clone", "isolated", "runner", "os", "observability"],
       "properties": {
         "fresh_clone": { "const": true },
         "isolated": { "type": "boolean" },
         "runner": { "type": "string" },
         "os": { "type": "string" },
-        "unity_version": { "type": ["string", "null"] }
+        "unity_version": { "type": ["string", "null"] },
+        "observability": { "enum": ["NONE", "STRUCTURAL_ONLY", "EXECUTABLE_ATTEMPTED", "FULL"] }
       }
     },
     "stages": {

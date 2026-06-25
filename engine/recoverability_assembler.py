@@ -65,6 +65,23 @@ def _stage(
     }
 
 
+def derive_observability(observations: dict[str, Any]) -> str:
+    """Classify how much of the project this run was actually able to see.
+
+    Kept separate from `verdict`: verdict is a rule-bound pass/fail judgment,
+    observability is a description of what evidence was even available to
+    judge. A FAIL with observability=STRUCTURAL_ONLY means "boot was never
+    attempted", which reads very differently from a FAIL after a real attempt.
+    """
+    if not observations.get("unity_structure_ok", False):
+        return "NONE"
+    if not observations.get("unity_boot_attempted", False):
+        return "STRUCTURAL_ONLY"
+    if observations.get("unity_boot_ok", False):
+        return "FULL"
+    return "EXECUTABLE_ATTEMPTED"
+
+
 def derive_environment(probe: dict[str, Any]) -> dict[str, Any]:
     ev = probe.get("evidence", {})
     fingerprint = ev.get("runner_fingerprint", {}) or {}
@@ -74,6 +91,7 @@ def derive_environment(probe: dict[str, Any]) -> dict[str, Any]:
         "runner": str(fingerprint.get("os", "unknown")),
         "os": str(fingerprint.get("os", "unknown")),
         "unity_version": ev.get("unity_version"),
+        "observability": derive_observability(probe.get("observations", {})),
     }
 
 
