@@ -68,10 +68,13 @@ def test_run_probe_against_readme_only_repo_observes_missing_structure(local_rep
     assert report.evidence.workdir_is_temp is True
 
 
-def test_run_probe_against_this_actual_repo_is_blocked_by_missing_unity_project():
-    """Ground-truth regression: as of this commit, arch-rivals-street itself
-    has no Assets/Packages/ProjectSettings, so probing it must observe that
-    truthfully rather than claim success.
+def test_run_probe_against_this_actual_repo_has_placeholder_structure_but_cannot_boot():
+    """Ground-truth regression: arch-rivals-street now has a placeholder
+    Unity skeleton (Assets/Packages/ProjectSettings exist), but no real
+    UNITY_PATH is configured in this environment, so the probe must report
+    the structure as present while honestly skipping the boot check rather
+    than claiming a verified boot it never performed.
     """
     report = run_probe(".", "HEAD")
-    assert report.observations["unity_structure_ok"] is False
+    assert report.observations["unity_structure_ok"] is True
+    assert report.observations["unity_boot_ok"] is False
