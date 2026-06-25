@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arch-rivals-street/engine/schemas/gate.schema.json",
+  "title": "RecoverabilityGateResult",
+  "type": "object",
+  "required": ["spec_version", "run", "environment", "stages", "drift", "heal", "verdict", "notes"],
+  "additionalProperties": true,
+  "properties": {
+    "spec_version": { "type": "string" },
+    "run": {
+      "type": "object",
+      "required": ["run_id", "timestamp_utc", "repo", "commit"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "timestamp_utc": { "type": "string" },
+        "repo": { "type": "string" },
+        "commit": {
+          "type": "object",
+          "required": ["sha"],
+          "properties": {
+            "sha": { "type": ["string", "null"] },
+            "branch": { "type": ["string", "null"] },
+            "pr_number": { "type": ["integer", "null"] }
+          }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["fresh_clone", "isolated", "runner", "os"],
+      "properties": {
+        "fresh_clone": { "const": true },
+        "isolated": { "type": "boolean" },
+        "runner": { "type": "string" },
+        "os": { "type": "string" },
+        "unity_version": { "type": ["string", "null"] }
+      }
+    },
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "started_utc", "ended_utc"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "enum": ["PASS", "FAIL", "SKIP", "WARN", "BLOCKED"] },
+          "started_utc": { "type": "string" },
+          "ended_utc": { "type": "string" },
+          "details": { "type": "object" },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["kind", "path"],
+              "properties": {
+                "kind": { "type": "string" },
+                "path": { "type": "string" },
+                "sha256": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "drift": {
+      "type": "object",
+      "required": ["total", "classification", "breakdown", "raw_vector"],
+      "properties": {
+        "total": { "type": "number" },
+        "classification": { "enum": ["STABLE", "MINOR", "MAJOR", "CRITICAL"] },
+        "breakdown": { "type": "object" },
+        "raw_vector": { "type": "array" }
+      }
+    },
+    "heal": {
+      "type": "object",
+      "required": ["attempted", "actions", "outcome"],
+      "properties": {
+        "attempted": { "type": "boolean" },
+        "actions": { "type": "array" },
+        "outcome": { "type": "string" }
+      }
+    },
+    "verdict": { "enum": ["PASS", "WARN", "FAIL", "BLOCKED"] },
+    "notes": { "type": "array", "items": { "type": "string" } }
+  }
+}
