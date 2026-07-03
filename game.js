@@ -97,6 +97,68 @@ function clampToCourt(p) {
   p.y = Math.max(60, Math.min(540, p.y));
 }
 
+// Deterministic finite-state machine for every non-player-controlled athlete.
+// State is derived fresh each frame from ball possession — no stored transition
+// history — so behavior stays reproducible given the same state snapshot.
+const AI_STATE = {
+  CHASE_BALL: "CHASE_BALL", // ball is loose: race to it
+  GUARD_CARRIER: "GUARD_CARRIER", // opposing team has the ball: close the gap and pressure for a steal
+  ADVANCE_TO_HOOP: "ADVANCE_TO_HOOP" // own team has the ball: push toward the scoring hoop
+};
+
+const AI_SPEED = 1.6;
+const GUARD_STANDOFF = 20; // stop just outside steal range so trySteal has room to roll
+const AUTO_SHOOT_RANGE = 120;
+
+function decideAiState(player) {
+  const owner = state.ball.owner;
+  if (!owner) return AI_STATE.CHASE_BALL;
+  const carrier = state.players.find(pl => pl.id === owner);
+  return carrier.team === player.team ? AI_STATE.ADVANCE_TO_HOOP : AI_STATE.GUARD_CARRIER;
+}
+
+function moveToward(player, tx, ty, standoff = 0) {
+  const dx = tx - player.x;
+  const dy = ty - player.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist <= standoff) return;
+  player.x += (dx / dist) * AI_SPEED;
+  player.y += (dy / dist) * AI_SPEED;
+}
+
+function attackHoopFor(team) {
+  return team === "A" ? HOOP_RIGHT : HOOP_LEFT;
+}
+
+function runDefenderAI(player) {
+  player.aiState = decideAiState(player);
+
+  switch (player.aiState) {
+    case AI_STATE.CHASE_BALL:
+      moveToward(player, state.ball.x, state.ball.y);
+      break;
+    case AI_STATE.GUARD_CARRIER: {
+      const carrier = state.players.find(pl => pl.id === state.ball.owner);
+      moveToward(player, carrier.x, carrier.y, GUARD_STANDOFF);
+      trySteal(player, carrier);
+      break;
+    }
+    case AI_STATE.ADVANCE_TO_HOOP: {
+      const hoop = attackHoopFor(player.team);
+      moveToward(player, hoop.x, hoop.y);
+      if (state.ball.owner === player.id) {
+        const dx = hoop.x - player.x;
+        const dy = hoop.y - player.y;
+        if (Math.sqrt(dx * dx + dy * dy) < AUTO_SHOOT_RANGE) {
+          shoot(player);
+        }
+      }
+      break;
+    }
+  }
+  clampToCourt(player);
+}
+
 function update() {
   const p = state.players[0];
   const speed = 2;
@@ -108,10 +170,13 @@ function update() {
 
   if (keys[" "]) shoot(p);
 
+  for (let i = 1; i < state.players.length; i++) {
+    runDefenderAI(state.players[i]);
+  }
+
   for (const pl of state.players) {
     tryGainPossession(pl);
   }
-  trySteal(state.players[2], p);
 
   updateBall();
   checkRebound();
