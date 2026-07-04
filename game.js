@@ -104,6 +104,7 @@ const AUTO_SHOOT_RANGE = 120;
 const PRESSURE_RADIUS = 60; // beyond this, a defender builds no pressure at all
 const BASE_PRESSURE = 1;
 const STEAL_THRESHOLD = 45; // accumulated pressure required to force a turnover
+const DEBUG_STEALS = false; // flip on to audit pressure/threshold at each turnover
 
 function calculateDefenderPressure(defender, carrier) {
   const dx = carrier.x - defender.x;
@@ -132,6 +133,12 @@ function updateAccumulatedPressure(defender, carrier) {
 
 function evaluateStealState(defender, carrier) {
   if (defender.pressure < STEAL_THRESHOLD) return;
+  if (DEBUG_STEALS) {
+    console.debug(
+      `[steal] ${defender.id} (${defender.aiState}) took the ball from ${carrier.id}: ` +
+      `pressure=${defender.pressure.toFixed(2)} threshold=${STEAL_THRESHOLD}`
+    );
+  }
   const dx = carrier.x - defender.x;
   const dy = carrier.y - defender.y;
   const dist = Math.sqrt(dx * dx + dy * dy) || 1;
