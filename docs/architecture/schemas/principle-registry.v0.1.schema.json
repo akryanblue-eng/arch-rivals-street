@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "principle-registry.v0.1.schema.json",
+  "title": "PrincipleEntry",
+  "description": "A governing principle extracted from a promoted AEP governance decision. Principles are immutable once registered; arbitration outcome is recorded via PrincipleResolutionRecord rather than by modifying the principle. The `active` flag is the only mutable field: it is set to false when the principle is subordinated by conflict resolution.",
+  "type": "object",
+  "required": [
+    "principle_id",
+    "principle_class",
+    "scope_descriptor",
+    "source_entry_id",
+    "active"
+  ],
+  "properties": {
+    "principle_id": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "Content-addressed identifier derived from principle_class, scope_descriptor, and source_entry_id. Two identical principles produce the same ID, making duplicates detectable."
+    },
+    "principle_class": {
+      "type": "string",
+      "enum": [
+        "LEVEL_0_DETERMINISM_INTEGRITY",
+        "LEVEL_1_SAFETY_BOUNDARY",
+        "LEVEL_2_SIMULATION_ACCURACY",
+        "LEVEL_3_BEHAVIORAL_OPTIMIZATION",
+        "LEVEL_4_PREFERENCE_STYLE"
+      ],
+      "description": "Taxonomy hierarchy classification. Lower level number = higher authority. LEVEL_0 always overrides LEVEL_3 when constraints collide. The hierarchy: LEVEL_0 (determinism/integrity invariants) > LEVEL_1 (safety boundaries) > LEVEL_2 (simulation accuracy) > LEVEL_3 (behavioral optimization heuristics) > LEVEL_4 (preference/style guidance)."
+    },
+    "scope_descriptor": {
+      "type": "string",
+      "description": "Human-readable specificity annotation describing the scope of the governing rule. Narrower (more qualified) rules have longer, more specific descriptors. Used by the SPECIFICITY_COLLISION resolution path: the principle with the longer scope_descriptor wins within the same taxonomy level."
+    },
+    "source_entry_id": {
+      "type": "string",
+      "description": "entry_id of the AepDecisionLedgerEntry whose PROMOTED verdict produced this principle. Creates a traceable link from the active governing principle back to the governance event that justified it."
+    },
+    "tolerance_delta": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Optional numeric tolerance contribution. When a principle permits a floating-point tolerance (e.g. +0.003 coordinate drift), record it here so aggregateEnvelopeCheck() can sum contributions across all active principles and guard against cumulative drift breaching the global invariant envelope (MAX_AGGREGATE_TOLERANCE = 0.01)."
+    },
+    "active": {
+      "type": "boolean",
+      "description": "True while the principle governs execution. Set to false when the principle is subordinated by a PrincipleResolutionRecord. Subordinated principles are preserved in the registry as immutable historical records — they are never deleted."
+    }
+  },
+  "additionalProperties": false
+}

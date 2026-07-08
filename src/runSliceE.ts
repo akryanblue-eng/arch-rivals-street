@@ -51,10 +51,22 @@ import {
   resetDecisionLedger,
 } from "./evolution/AepDecisionLedger";
 
+import {
+  registerPrinciple,
+  detectConflict,
+  resolveConflict,
+  aggregateEnvelopeCheck,
+  dumpPrincipleRegistry,
+  dumpResolutionLog,
+  resetPrincipleRegistry,
+  MAX_AGGREGATE_TOLERANCE,
+} from "./evolution/AepPrincipleRegistry";
+
 function run(): void {
   resetSession();
   resetLedger();
   resetDecisionLedger();
+  resetPrincipleRegistry();
 
   const sliceOutcomes: SliceEvidenceRecord["outcomes"] = [];
 
@@ -531,7 +543,7 @@ function run(): void {
   // historical BLOCKED entry and records the context delta that evaporated
   // the veto. The old entry is NOT modified — the ledger retains both
   // decisions as an immutable causal chain.
-  appendEntry(
+  const promotedEntry6d = appendEntry(
     crossoverDecisionNew,
     "Crossover physics float drift.",
     {
@@ -561,6 +573,231 @@ function run(): void {
   assert(tamperedResult === "DETECTED", "Tampered deploy attempt must be DETECTED");
   console.log(`Adversarial audit — direct deploy attempt: ${tamperedResult}`);
 
+  // ── Case 7: AEP-MEM-003 — Principle Arbitration ───────────────────────
+  //
+  // With AEP-MEM-001 and AEP-MEM-002 proven, the governance system now
+  // accumulates active governing principles extracted from promoted decisions.
+  // As the principle set grows, collisions become inevitable. AEP-MEM-003
+  // provides the arbitration engine that resolves conflicts without silently
+  // discarding either judgment.
+  //
+  // Three sub-cases:
+  //
+  //   Case 7a: Taxonomy Override
+  //            INTEGRITY_SHIELD (LEVEL_0) vs PATHFINDING_HEURISTIC (LEVEL_3)
+  //            Different taxonomy levels → TAXONOMY_OVERRIDE
+  //            Winner: INTEGRITY_SHIELD (lower rank = higher authority)
+  //            Loser subordinated; resolution record written.
+  //
+  //   Case 7b: Specificity Collision
+  //            Two LEVEL_3 principles at the same taxonomy level but different
+  //            scope widths → SPECIFICITY_COLLISION
+  //            Winner: narrower scope descriptor
+  //            Loser subordinated; resolution record written.
+  //
+  //   Case 7c: Aggregation Envelope
+  //            Individual tolerance deltas fit within the global envelope.
+  //            Combined total that would exceed the envelope is rejected.
+  //            Guard prevents silent cumulative tolerance drift.
+
+  // ── Case 7a: Taxonomy Override ───────────────────────────────────────────
+  //
+  // Background:  Two principles are active simultaneously:
+  //   INTEGRITY_SHIELD: a LEVEL_0 determinism invariant derived from the
+  //     retrieval fix PROMOTED in Case 1 — "coordinate alignment must not
+  //     drift beyond epsilon at the position sync boundary."
+  //   PATHFINDING_HEURISTIC: a LEVEL_3 behavioral optimization derived from
+  //     the planner fix PROMOTED in Case 5 — "choose aggressive shortcut
+  //     path for offensive advantage when execution error rate is below
+  //     target."
+  //
+  // Both principles are independently valid. Together, the shortcut path
+  // creates an invalid coordinate state. The taxonomy hierarchy resolves
+  // this: LEVEL_0 always overrides LEVEL_3.
+
+  const integrityShield = registerPrinciple(
+    "LEVEL_0_DETERMINISM_INTEGRITY",
+    "Coordinate alignment must not drift beyond epsilon at the position sync boundary.",
+    historicalBlockedEntry.entry_id
+  );
+
+  const pathfindingHeuristic = registerPrinciple(
+    "LEVEL_3_BEHAVIORAL_OPTIMIZATION",
+    "Choose aggressive shortcut path for offensive advantage.",
+    promotedEntry6d.entry_id
+  );
+
+  const taxonomyConflictType = detectConflict(integrityShield, pathfindingHeuristic);
+  console.log(`\nCase 7a — detectConflict (taxonomy): ${taxonomyConflictType}`);
+
+  assert(
+    taxonomyConflictType === "TAXONOMY_OVERRIDE",
+    "Case 7a: different taxonomy levels must produce TAXONOMY_OVERRIDE"
+  );
+
+  const taxonomyResolution = resolveConflict(
+    integrityShield,
+    pathfindingHeuristic,
+    taxonomyConflictType as "TAXONOMY_OVERRIDE"
+  );
+
+  console.log("Case 7a — resolution record:");
+  console.log(JSON.stringify(taxonomyResolution, null, 2));
+
+  assert(
+    taxonomyResolution.winner === integrityShield.principle_id,
+    "Case 7a: LEVEL_0 principle must win over LEVEL_3"
+  );
+  assert(
+    taxonomyResolution.loser === pathfindingHeuristic.principle_id,
+    "Case 7a: LEVEL_3 principle must be subordinated"
+  );
+  assert(
+    !pathfindingHeuristic.active,
+    "Case 7a: losing principle must be marked inactive"
+  );
+  assert(
+    integrityShield.active,
+    "Case 7a: winning principle must remain active"
+  );
+
+  sliceOutcomes.push({
+    case: "principle_taxonomy_override",
+    decision: "RESOLVED",
+    reason: "TAXONOMY_OVERRIDE",
+  });
+
+  // ── Case 7b: Specificity Collision ───────────────────────────────────────
+  //
+  // Background:  Two LEVEL_3 behavioral-optimization principles are active
+  //   simultaneously at the same taxonomy level:
+  //   BROAD_MOVEMENT:  "Optimize player movement efficiency." — broad scope.
+  //   NARROW_REPLAY:   "During frame reconciliation, preserve exact replay
+  //     determinism at the position sync boundary." — narrow scope.
+  //
+  // The specificity rule: a narrower (more qualified) rule wins over a broader
+  // one when both operate at the same taxonomy level. The narrow rule applies
+  // to a specific sub-operation (frame reconciliation); the broad rule does not
+  // override constraints that apply to a narrower causal boundary.
+
+  const broadMovementPolicy = registerPrinciple(
+    "LEVEL_3_BEHAVIORAL_OPTIMIZATION",
+    "Optimize player movement efficiency.",
+    promotedEntry6d.entry_id
+  );
+
+  const narrowReplayPolicy = registerPrinciple(
+    "LEVEL_3_BEHAVIORAL_OPTIMIZATION",
+    "During frame reconciliation, preserve exact replay determinism at the position sync boundary.",
+    historicalBlockedEntry.entry_id
+  );
+
+  const specificityConflictType = detectConflict(broadMovementPolicy, narrowReplayPolicy);
+  console.log(`\nCase 7b — detectConflict (specificity): ${specificityConflictType}`);
+
+  assert(
+    specificityConflictType === "SPECIFICITY_COLLISION",
+    "Case 7b: same taxonomy level with different scope must produce SPECIFICITY_COLLISION"
+  );
+
+  const specificityResolution = resolveConflict(
+    broadMovementPolicy,
+    narrowReplayPolicy,
+    specificityConflictType as "SPECIFICITY_COLLISION"
+  );
+
+  console.log("Case 7b — resolution record:");
+  console.log(JSON.stringify(specificityResolution, null, 2));
+
+  assert(
+    specificityResolution.winner === narrowReplayPolicy.principle_id,
+    "Case 7b: narrower scope descriptor must win"
+  );
+  assert(
+    specificityResolution.loser === broadMovementPolicy.principle_id,
+    "Case 7b: broader scope descriptor must be subordinated"
+  );
+  assert(
+    !broadMovementPolicy.active,
+    "Case 7b: losing principle must be marked inactive"
+  );
+  assert(
+    narrowReplayPolicy.active,
+    "Case 7b: winning principle must remain active"
+  );
+
+  sliceOutcomes.push({
+    case: "principle_specificity_collision",
+    decision: "RESOLVED",
+    reason: "SPECIFICITY_COLLISION",
+  });
+
+  // ── Case 7c: Aggregation Envelope ────────────────────────────────────────
+  //
+  // Background:  Individual tolerance contributions look harmless in isolation.
+  //   The aggregate envelope check prevents 0.001 × 1000 = 1.0 structural
+  //   drift from accumulating silently. The global invariant envelope is
+  //   MAX_AGGREGATE_TOLERANCE (1%).
+  //
+  // Step 7c-1:  Register tolerance principle A (delta: 0.003). Running sum: 0.003.
+  //             Propose adding 0.004 more → 0.003 + 0.004 = 0.007 ≤ 0.01 → WITHIN_ENVELOPE.
+  // Step 7c-2:  Register tolerance principle B (delta: 0.004). Running sum: 0.007.
+  //             Propose adding 0.004 more → 0.007 + 0.004 = 0.011 > 0.01 → ENVELOPE_EXCEEDED.
+
+  const tolerancePrincipleA = registerPrinciple(
+    "LEVEL_2_SIMULATION_ACCURACY",
+    "Allow +0.003 coordinate tolerance during high-velocity interpolation.",
+    historicalBlockedEntry.entry_id,
+    0.003
+  );
+
+  // Check before registering B: sum is 0.003, proposing 0.004 more → fits.
+  const envelopeCheckBeforeB = aggregateEnvelopeCheck(
+    0.004,
+    dumpPrincipleRegistry()
+  );
+  console.log(`\nCase 7c — envelope check (0.003 active + 0.004 proposed): ${envelopeCheckBeforeB}`);
+
+  assert(
+    envelopeCheckBeforeB === "WITHIN_ENVELOPE",
+    "Case 7c: 0.003 + 0.004 must be WITHIN_ENVELOPE"
+  );
+
+  const tolerancePrincipleB = registerPrinciple(
+    "LEVEL_2_SIMULATION_ACCURACY",
+    "Allow +0.004 coordinate tolerance during crossover boundary transitions.",
+    promotedEntry6d.entry_id,
+    0.004
+  );
+
+  // Now sum is 0.007. Propose adding 0.004 more → 0.011 > MAX_AGGREGATE_TOLERANCE.
+  const envelopeCheckExceeded = aggregateEnvelopeCheck(
+    0.004,
+    dumpPrincipleRegistry()
+  );
+  console.log(
+    `Case 7c — envelope check (0.007 active + 0.004 proposed, limit ${MAX_AGGREGATE_TOLERANCE}): ${envelopeCheckExceeded}`
+  );
+
+  assert(
+    envelopeCheckExceeded === "ENVELOPE_EXCEEDED",
+    "Case 7c: 0.007 + 0.004 must be ENVELOPE_EXCEEDED"
+  );
+  assert(
+    tolerancePrincipleA.active,
+    "Case 7c: tolerance principle A must remain active (not subordinated)"
+  );
+  assert(
+    tolerancePrincipleB.active,
+    "Case 7c: tolerance principle B must remain active (not subordinated)"
+  );
+
+  sliceOutcomes.push({
+    case: "principle_aggregation_guard",
+    decision: "ENVELOPE_EXCEEDED",
+    reason: "AGGREGATION_LIMIT",
+  });
+
   // ── Evidence record ───────────────────────────────────────────────────────
   const evidence = buildEvidenceRecord(sliceOutcomes);
 
@@ -586,6 +823,18 @@ function run(): void {
   const decisionLedgerEntries = dumpDecisionLedger();
   console.log(`\nAEP Decision Ledger entries: ${decisionLedgerEntries.length}`);
   console.log(JSON.stringify(decisionLedgerEntries, null, 2));
+
+  // ── AEP Principle Registry ────────────────────────────────────────────────
+  //
+  // The principle registry is the accumulated wisdom layer. Each entry records
+  // an active governing principle derived from a promoted governance decision.
+  // Resolution records link conflicting principles and explain every arbitration.
+  const principleEntries = dumpPrincipleRegistry();
+  const resolutionEntries = dumpResolutionLog();
+  console.log(`\nAEP Principle Registry entries: ${principleEntries.length}`);
+  console.log(`AEP Resolution Log entries: ${resolutionEntries.length}`);
+  console.log(JSON.stringify(principleEntries, null, 2));
+  console.log(JSON.stringify(resolutionEntries, null, 2));
 
   console.log("\nAll assertions passed. AEP v0.1 proof slice complete.");
 }
