@@ -197,9 +197,14 @@ AEP-MEM-001 memory query
   ┌──────────────────────┐
   │ NOVEL_INTERVENTION    │  ← proceed to simulation
   │ PRIOR_SUCCESS         │  ← proceed to simulation
-  │ PRIOR_FAILURE         │  ← DO_NOT_RETRY (halt)
-  │ PRIOR_REJECTION       │  ← DO_NOT_RETRY (halt)
+  │ PRIOR_FAILURE         │  ← AEP-MEM-002 context check
+  │ PRIOR_REJECTION       │  ← AEP-MEM-002 context check
   └──────────────────────┘
+         ↓ (AEP-MEM-002 when prior failure/rejection found)
+  ┌──────────────────────────────────────┐
+  │ Delta == Null (identical context)     │  ← HALTED_BY_MEMORY (halt)
+  │ Delta != Null (environmental drift)   │  ← VETO_EVAPORATED (proceed)
+  └──────────────────────────────────────┘
          ↓ (if proceeding)
 EvolvableComponent ladder check
          ↓
@@ -217,7 +222,7 @@ RIG ledger (AEP outcome event)
          ↓
 AepDecisionLedger.appendEntry()
          ↓
-Decision ledger (causal record)
+Decision ledger (causal record; resolution_context if overriding a prior veto)
 ```
 
 ---
@@ -265,13 +270,17 @@ Key event types:
 
 ## Verification Evidence
 
-See `docs/implementation/aep-slice-a.md` for the proof slice results.
+See `docs/implementation/aep-slice-a.md` for the original proof slice results.
+Full six-case evidence is produced by `src/runSliceE.ts`.
 
 | Case | Component | Outcome | Meaning |
 |---|---|---|---|
 | Retrieval fix | `RETRIEVAL` | `PROMOTED` | Smallest justified change improved behaviour |
 | Base-model retrain | `BASE_MODEL` | `REJECTED` | Bigger intervention was unnecessary |
 | Tool-policy change | `TOOL_POLICY` | `BLOCKED` | Simulation prevented harmful deployment |
+| Historical restraint | `TOOL_POLICY` | `HALTED_BY_MEMORY` | AEP-MEM-001 prevented repeat of known failure |
+| Novel exploration | `PLANNER` | `PROMOTED` | Memory system allows novel paths through |
+| Contradiction resolution | `TOOL_POLICY` | `PROMOTED` (after prior BLOCKED) | AEP-MEM-002 evaporated legacy-simulator veto |
 
 ---
 
@@ -335,6 +344,8 @@ Each entry captures the complete governance trace:
 | `governance_evaluation` | Verdict (PROMOTED/REJECTED/BLOCKED), reason code, simulation metrics |
 | `audit_trail` | Simulation verified flag, tamper detection flag, execution hash |
 | `causal_signature` | Optional: failure class, affected metric, origin event hash |
+| `context_metadata` | Optional: evaluation environment key-value pairs (simulator version, etc.) |
+| `resolution_context` | Optional: AEP-MEM-002 contradiction resolution chain (overruled entry, context delta, resolution type) |
 
 ### Justification Levels
 
@@ -376,6 +387,82 @@ prevents the system from repeating known failures.
 
 Novel interventions (no historical match) return `PROCEED_TO_SIMULATION`.
 
+### AEP-MEM-002: Contradiction Resolution
+
+AEP-MEM-002 activates when AEP-MEM-001 returns a prior failure. Rather than
+treating the historical veto as absolute, the system evaluates whether the
+current evaluation context has changed enough to warrant a re-evaluation.
+
+The control flow:
+
+```
+Prior decision found
+       │
+       ▼
+Compare current_context vs entry.context_metadata
+       │
+┌──────┴────────────────────────────┐
+│                                   │
+▼                                   ▼
+Delta == Null                 Delta != Null
+(identical context)           (environmental drift)
+       │                             │
+       ▼                             ▼
+HALTED_BY_MEMORY              VETO_EVAPORATED
+                              (proceed to simulation)
+```
+
+If context has not changed (`Delta == Null`), `HALTED_BY_MEMORY` is returned
+and no simulation is run. This prevents repeated evaluation of the same
+intervention under the same conditions.
+
+If context has changed (`Delta != Null`), the veto is evaporated and the
+system proceeds to ladder check and simulation. The resolution type is
+classified from the delta:
+
+| Resolution type | When applied |
+|---|---|
+| `SIMULATOR_INVALIDATION` | Simulator version or interpolation mode changed |
+| `CONTEXTUAL_BIFURCATION` | Intervention targets a different domain |
+| `BOUNDARY_SHIFT` | Environmental threshold or dependency changed |
+
+The overriding PROMOTED entry carries a `resolution_context` that links back
+to the historical entry via `overruled_entry_id`. The historical entry is
+**not modified** — both decisions coexist as an immutable causal chain.
+
+Key invariant:
+
+> A self-correcting governance system can change its mind when conditions
+> change, while preserving a verifiable explanation of why the old judgment
+> was valid at the time.
+
+API:
+
+```typescript
+evaluateContextDelta({
+    target_subsystem: "TOOL_POLICY",
+    proposal_class: "micro-checks",
+    current_context: {
+        simulator_version: "v2.0.0-high-fidelity",
+        interpolation_mode: "HERMITE_SPLINE"
+    }
+})
+```
+
+Returns:
+
+```json
+{
+  "outcome": "VETO_EVAPORATED",
+  "overruled_entry_id": "sha256:...",
+  "resolution_type": "SIMULATOR_INVALIDATION",
+  "context_delta": {
+    "simulator_version": { "old": "v1.0.2-legacy", "new": "v2.0.0-high-fidelity" },
+    "interpolation_mode": { "old": "LINEAR", "new": "HERMITE_SPLINE" }
+  }
+}
+```
+
 ### Ladder Semantics (Updated)
 
 The escalation ladder is scoped per failure context (ledgerRef) and uses a
@@ -399,7 +486,8 @@ Key functions:
 
 | Function | Responsibility |
 |---|---|
-| `appendEntry(decision, observedFailure, causalSignature?)` | Write a governance decision to the ledger |
+| `appendEntry(decision, observedFailure, causalSignature?, contextMetadata?, resolutionContext?)` | Write a governance decision to the ledger |
 | `queryPriorIntervention(request)` | AEP-MEM-001: query prior interventions before re-attempting |
+| `evaluateContextDelta(request)` | AEP-MEM-002: compare current context against historical veto; evaporate veto if context changed |
 | `dumpDecisionLedger()` | Return frozen copy of all ledger entries |
 | `resetDecisionLedger()` | Reset for isolated test runs |

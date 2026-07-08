@@ -4,6 +4,7 @@
 // Decision trace for each outcome:
 //   Input Experience → RIG Ledger Evidence → Diagnosis →
 //   AEP-MEM-001 Memory Query → Novel / Known →
+//   AEP-MEM-002 Context Check (if prior exists) →
 //   Evolution Proposal → Simulation Result → Governance Decision →
 //   Audit Record → Append causal record to Decision Ledger
 //
@@ -14,11 +15,16 @@
 //   Case 4: Historical restraint     → AEP-MEM-001 PRIOR_FAILURE → HALTED (no simulation)
 //   Case 5: Novel exploration        → AEP-MEM-001 NOVEL_INTERVENTION → IMPROVED (0.45→0.10) → PROMOTED
 //
+// Contradiction resolution case:
+//   Case 6: AEP-MEM-002 SIMULATOR_INVALIDATION
+//           Historical BLOCKED (v1 simulator) + context delta (v2 simulator)
+//           → VETO_EVAPORATED → IMPROVED (0.45→0.05) → PROMOTED
+//
 // Adversarial audit:
 //   Direct-deploy attempt without AEP simulation            → DETECTED
 //   Simulation gate enforcement (BLOCKED stops deployment)  → ENFORCED
 //
-// Run with: node -r ts-node/register src/runSliceE.ts
+// Run with: npx tsc && node dist/runSliceE.js
 
 import {
   propose,
@@ -40,6 +46,7 @@ import {
 import {
   appendEntry,
   queryPriorIntervention,
+  evaluateContextDelta,
   dumpDecisionLedger,
   resetDecisionLedger,
 } from "./evolution/AepDecisionLedger";
@@ -343,6 +350,204 @@ function run(): void {
       failure_class: "PLANNER_EXECUTION_ORDER_DEGRADATION",
       affected_metric: "execution_error_rate",
       origin_event_hash: plannerProposal.ledgerRef,
+    }
+  );
+
+  // ── Case 6: AEP-MEM-002 — Contradiction Resolution (Simulator Invalidation) ──
+  //
+  // Background:   A TOOL_POLICY mutation to bypass high-frequency position
+  //               micro-checks was BLOCKED in a prior governance cycle because
+  //               simulator v1.0.2-legacy misclassified valid crossover movement
+  //               as a position desync regression (false harmful signal).
+  //
+  // Step 6a:      Seed the historical BLOCKED entry using the legacy simulator
+  //               context. This represents the record that would have been written
+  //               when the original evaluation ran under v1.0.2-legacy.
+  //
+  // Step 6b:      AEP-MEM-001 query on a re-proposal confirms PRIOR_FAILURE.
+  //               Memory gate recommends DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE.
+  //
+  // Step 6c:      AEP-MEM-002 context check — same context → HALTED_BY_MEMORY.
+  //               Developer upgrades to simulator v2.0.0-high-fidelity.
+  //               AEP-MEM-002 context check — changed context → VETO_EVAPORATED.
+  //               Resolution type: SIMULATOR_INVALIDATION.
+  //
+  // Step 6d:      New simulation with accurate simulator → error rate 0.05.
+  //               Governance: IMPROVED → PROMOTED.
+  //               Resolution context written to ledger, linking to the historical
+  //               BLOCKED entry and preserving the full decision genealogy.
+  //
+  // Why matters:  Proves memory does not become a fossil. A self-correcting
+  //               governance system can change its mind when conditions change,
+  //               while preserving an unbroken audit trail of why the old
+  //               judgment was valid at the time.
+
+  // Step 6a: Seed the historical BLOCKED entry (legacy simulator context).
+  const crossoverProposalLegacy: AepProposal = {
+    proposalId: "prop-060-legacy",
+    component: "TOOL_POLICY",
+    change: "Bypass high-frequency micro-checks on position update vectors.",
+    ledgerRef: "rig-failure-2026-07-08-004",
+  };
+
+  recordProposalCreated(crossoverProposalLegacy);
+
+  const crossoverDecisionLegacy = propose(crossoverProposalLegacy, () => ({
+    baselineErrorRate: 0.15,
+    candidateErrorRate: 0.65,
+    harmful: false,
+  }));
+
+  record(crossoverDecisionLegacy);
+  recordSimulationEnforced(crossoverProposalLegacy.proposalId, crossoverProposalLegacy.ledgerRef);
+
+  assert(crossoverDecisionLegacy.outcome === "BLOCKED", "Case 6a seed must be BLOCKED");
+
+  const historicalBlockedEntry = appendEntry(
+    crossoverDecisionLegacy,
+    "Crossover physics float drift.",
+    {
+      failure_class: "TOOL_POLICY_SIMULATION_ARTIFACT",
+      affected_metric: "position_sync_error_rate",
+      origin_event_hash: crossoverProposalLegacy.ledgerRef,
+    },
+    {
+      simulator_version: "v1.0.2-legacy",
+      interpolation_mode: "LINEAR",
+    }
+  );
+
+  console.log(`\nCase 6a — TOOL_POLICY seed: ${crossoverDecisionLegacy.outcome} (legacy simulator)`);
+  assert(historicalBlockedEntry.context_metadata?.simulator_version === "v1.0.2-legacy", "Case 6a: context_metadata must record legacy simulator");
+
+  // Step 6b: AEP-MEM-001 query confirms the intervention is known-failed.
+  const crossoverMem001Query = queryPriorIntervention({
+    target_subsystem: "TOOL_POLICY",
+    proposal_class: "micro-checks",
+  });
+
+  console.log("\nCase 6b — AEP-MEM-001 query (crossover micro-checks):");
+  console.log(JSON.stringify(crossoverMem001Query, null, 2));
+
+  assert(
+    crossoverMem001Query.result === "PRIOR_FAILURE",
+    "Case 6b: AEP-MEM-001 must return PRIOR_FAILURE"
+  );
+  assert(
+    crossoverMem001Query.recommended_action === "DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE",
+    "Case 6b: AEP-MEM-001 must recommend DO_NOT_RETRY"
+  );
+
+  // Step 6c: AEP-MEM-002 context check — same legacy context → HALTED_BY_MEMORY.
+  const sameContextCheck = evaluateContextDelta({
+    target_subsystem: "TOOL_POLICY",
+    proposal_class: "micro-checks",
+    current_context: {
+      simulator_version: "v1.0.2-legacy",
+      interpolation_mode: "LINEAR",
+    },
+  });
+
+  console.log("\nCase 6c — AEP-MEM-002 (same context, should halt):");
+  console.log(JSON.stringify(sameContextCheck, null, 2));
+
+  assert(
+    sameContextCheck.outcome === "HALTED_BY_MEMORY",
+    "Case 6c: identical context must return HALTED_BY_MEMORY"
+  );
+
+  // AEP-MEM-002 context check — upgraded simulator context → VETO_EVAPORATED.
+  const newContextCheck = evaluateContextDelta({
+    target_subsystem: "TOOL_POLICY",
+    proposal_class: "micro-checks",
+    current_context: {
+      simulator_version: "v2.0.0-high-fidelity",
+      interpolation_mode: "HERMITE_SPLINE",
+    },
+  });
+
+  console.log("\nCase 6c — AEP-MEM-002 (upgraded simulator, veto evaporated):");
+  console.log(JSON.stringify(newContextCheck, null, 2));
+
+  assert(
+    newContextCheck.outcome === "VETO_EVAPORATED",
+    "Case 6c: changed context must return VETO_EVAPORATED"
+  );
+  assert(
+    newContextCheck.resolution_type === "SIMULATOR_INVALIDATION",
+    "Case 6c: resolution type must be SIMULATOR_INVALIDATION"
+  );
+  assert(
+    newContextCheck.overruled_entry_id === historicalBlockedEntry.entry_id,
+    "Case 6c: overruled_entry_id must reference the historical BLOCKED entry"
+  );
+  assert(
+    newContextCheck.context_delta?.simulator_version?.old === "v1.0.2-legacy",
+    "Case 6c: delta must record old simulator version"
+  );
+  assert(
+    newContextCheck.context_delta?.simulator_version?.new === "v2.0.0-high-fidelity",
+    "Case 6c: delta must record new simulator version"
+  );
+
+  // Step 6d: Veto evaporated — proceed to ladder check and simulation.
+  const crossoverProposalNew: AepProposal = {
+    proposalId: "prop-060-new",
+    component: "TOOL_POLICY",
+    change: "Bypass high-frequency micro-checks on position update vectors.",
+    ledgerRef: "rig-failure-2026-08-01-001",
+  };
+
+  recordProposalCreated(crossoverProposalNew);
+
+  const crossoverDecisionNew = propose(crossoverProposalNew, () => ({
+    baselineErrorRate: 0.45,
+    candidateErrorRate: 0.05,
+    harmful: false,
+  }));
+
+  const crossoverNewEvent = record(crossoverDecisionNew);
+
+  console.log(
+    `Case 6d — TOOL_POLICY (high-fidelity simulator): ${crossoverDecisionNew.outcome}` +
+      ` [${crossoverDecisionNew.simulationResult?.label}` +
+      ` ${crossoverDecisionNew.simulationResult?.baselineErrorRate}→` +
+      `${crossoverDecisionNew.simulationResult?.candidateErrorRate}]`
+  );
+
+  assert(crossoverDecisionNew.outcome === "PROMOTED", "Case 6d must be PROMOTED");
+  assert(crossoverDecisionNew.simulationResult?.label === "IMPROVED", "Case 6d simulation must be IMPROVED");
+  assert(crossoverNewEvent.eventType === "aep.proposal.promoted", "Case 6d event type");
+
+  sliceOutcomes.push({
+    case: "tool_policy_contradiction_resolution",
+    decision: "PROMOTED",
+    simulation: "IMPROVED",
+    before: crossoverDecisionNew.simulationResult!.baselineErrorRate,
+    after: crossoverDecisionNew.simulationResult!.candidateErrorRate,
+  });
+
+  // Append the PROMOTED entry with a resolution_context that links to the
+  // historical BLOCKED entry and records the context delta that evaporated
+  // the veto. The old entry is NOT modified — the ledger retains both
+  // decisions as an immutable causal chain.
+  appendEntry(
+    crossoverDecisionNew,
+    "Crossover physics float drift.",
+    {
+      failure_class: "TOOL_POLICY_SIMULATION_ARTIFACT",
+      affected_metric: "position_sync_error_rate",
+      origin_event_hash: crossoverProposalNew.ledgerRef,
+    },
+    {
+      simulator_version: "v2.0.0-high-fidelity",
+      interpolation_mode: "HERMITE_SPLINE",
+    },
+    {
+      resolution_type: newContextCheck.resolution_type!,
+      overruled_entry_id: newContextCheck.overruled_entry_id!,
+      context_delta: newContextCheck.context_delta!,
+      evidence_required: true,
     }
   );
 

@@ -136,6 +136,53 @@
         }
       },
       "additionalProperties": false
+    },
+    "context_metadata": {
+      "type": "object",
+      "description": "Free-form key-value pairs describing the evaluation environment at the time this entry was recorded. Used by AEP-MEM-002 to compute a context delta when a previously vetoed intervention is re-proposed. Absence of this field is treated as identical context — an entry without context_metadata cannot have its veto evaporated.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "resolution_context": {
+      "type": "object",
+      "description": "Present when this entry overrules a prior veto via AEP-MEM-002 contradiction resolution. Creates a first-class relationship between the new decision and the historical entry it supersedes. The historical entry is not modified — both entries coexist as an immutable causal chain.",
+      "required": ["resolution_type", "overruled_entry_id", "context_delta", "evidence_required"],
+      "properties": {
+        "resolution_type": {
+          "type": "string",
+          "enum": ["SIMULATOR_INVALIDATION", "CONTEXTUAL_BIFURCATION", "BOUNDARY_SHIFT"],
+          "description": "Classification of the contradiction resolution strategy. SIMULATOR_INVALIDATION: old verdict was an artifact of a flawed or outdated simulator. CONTEXTUAL_BIFURCATION: intervention targets a different domain than the historical failure. BOUNDARY_SHIFT: an environmental dependency or acceptance threshold has moved."
+        },
+        "overruled_entry_id": {
+          "type": "string",
+          "description": "entry_id of the historical BLOCKED or REJECTED entry whose veto was evaporated by context change."
+        },
+        "context_delta": {
+          "type": "object",
+          "description": "Changed context fields that justified evaporating the historical veto. Each key maps to an old/new pair.",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["old", "new"],
+            "properties": {
+              "old": {
+                "type": "string",
+                "description": "Context field value at the time of the historical (vetoed) entry."
+              },
+              "new": {
+                "type": "string",
+                "description": "Context field value at the time of this (overriding) entry."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "evidence_required": {
+          "type": "boolean",
+          "description": "When true, the system requires both a changed context delta AND new simulation evidence to promote an overriding entry. Prevents context change alone from being sufficient justification."
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
