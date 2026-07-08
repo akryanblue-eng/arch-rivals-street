@@ -1,0 +1,107 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "aep-events.v0.1.schema.json",
+  "title": "AEP Event",
+  "description": "Agent Evolution Protocol event written to the RIG ledger.",
+  "type": "object",
+  "required": ["eventId", "eventType", "timestamp", "component", "proposalId"],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "description": "Unique identifier for this event (UUID v4)."
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "aep.proposal.created",
+        "aep.simulation.started",
+        "aep.simulation.blocked",
+        "aep.proposal.rejected",
+        "aep.proposal.promoted",
+        "aep.audit.tampered_deploy_attempt",
+        "aep.audit.simulation_enforced"
+      ],
+      "description": "The type of AEP lifecycle event."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp at which the event was recorded."
+    },
+    "component": {
+      "type": "string",
+      "enum": [
+        "RETRIEVAL",
+        "MEMORY_POLICY",
+        "TOOL_POLICY",
+        "PLANNER",
+        "PROMPT",
+        "BASE_MODEL",
+        "GOVERNANCE",
+        "UNKNOWN"
+      ],
+      "description": "The EvolvableComponent ladder position targeted by this proposal, or GOVERNANCE/UNKNOWN for audit events."
+    },
+    "proposalId": {
+      "type": "string",
+      "description": "Identifier linking all events in a single proposal lifecycle."
+    },
+    "ledgerRef": {
+      "type": "string",
+      "description": "Reference to the RIG ledger entry that triggered this proposal."
+    },
+    "simulationResult": {
+      "type": "object",
+      "description": "Present on aep.simulation.blocked, aep.proposal.rejected, aep.proposal.promoted.",
+      "properties": {
+        "baselineBehaviourScore": {
+          "type": "number",
+          "description": "Aggregate behaviour score of the unmodified system on the replay window."
+        },
+        "candidateBehaviourScore": {
+          "type": "number",
+          "description": "Aggregate behaviour score of the proposed change on the same replay window."
+        },
+        "delta": {
+          "type": "number",
+          "description": "candidateBehaviourScore minus baselineBehaviourScore."
+        },
+        "harmful": {
+          "type": "boolean",
+          "description": "True when the simulation detected an outcome classified as harmful. Triggers BLOCKED."
+        }
+      },
+      "required": ["baselineBehaviourScore", "candidateBehaviourScore", "delta", "harmful"]
+    },
+    "blockReason": {
+      "type": "string",
+      "description": "Human-readable reason for a BLOCKED outcome. Present only on aep.simulation.blocked."
+    },
+    "rejectionReason": {
+      "type": "string",
+      "enum": [
+        "LADDER_NOT_SATISFIED",
+        "MODEL_CHANGE_NOT_JUSTIFIED",
+        "NO_IMPROVEMENT_OBSERVED"
+      ],
+      "description": "Coded reason for a REJECTED outcome. Present only on aep.proposal.rejected."
+    },
+    "ladderViolation": {
+      "type": "object",
+      "description": "Present when the proposal was rejected at ladder validation before simulation.",
+      "properties": {
+        "requestedComponent": {
+          "type": "string",
+          "description": "The component the proposer requested."
+        },
+        "requiredRejections": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Components at lower ladder positions that must be simulated and rejected first."
+        }
+      },
+      "required": ["requestedComponent", "requiredRejections"]
+    }
+  },
+  "additionalProperties": false
+}
