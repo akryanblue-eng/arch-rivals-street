@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "principle-registry.v0.1.schema.json",
   "title": "PrincipleEntry",
-  "description": "A governing principle extracted from a promoted AEP governance decision. Principles are immutable once registered; arbitration outcome is recorded via PrincipleResolutionRecord rather than by modifying the principle. The `active` flag is the only mutable field: it is set to false when the principle is subordinated by conflict resolution.",
+  "description": "A governing principle extracted from a promoted AEP governance decision. Principles are immutable once registered; arbitration outcome is recorded via PrincipleResolutionRecord rather than by modifying the principle. The `lifecycle_state` field is the only mutable field: it advances through the lifecycle state machine as arbitration and explicit lifecycle management events occur.",
   "type": "object",
   "required": [
     "principle_id",
     "principle_class",
     "scope_descriptor",
     "source_entry_id",
-    "active"
+    "lifecycle_state"
   ],
   "properties": {
     "principle_id": {
@@ -39,11 +39,22 @@
     "tolerance_delta": {
       "type": "number",
       "minimum": 0,
-      "description": "Optional numeric tolerance contribution. When a principle permits a floating-point tolerance (e.g. +0.003 coordinate drift), record it here so aggregateEnvelopeCheck() can sum contributions across all active principles and guard against cumulative drift breaching the global invariant envelope (MAX_AGGREGATE_TOLERANCE = 0.01)."
+      "description": "Optional numeric tolerance contribution. When a principle permits a floating-point tolerance (e.g. +0.003 coordinate drift), record it here so aggregateEnvelopeCheck() can sum contributions across all ACTIVE principles and guard against cumulative drift breaching the global invariant envelope (MAX_AGGREGATE_TOLERANCE = 0.01)."
     },
-    "active": {
-      "type": "boolean",
-      "description": "True while the principle governs execution. Set to false when the principle is subordinated by a PrincipleResolutionRecord. Subordinated principles are preserved in the registry as immutable historical records — they are never deleted."
+    "lifecycle_state": {
+      "type": "string",
+      "enum": [
+        "ACTIVE",
+        "SUBORDINATED",
+        "SUPERSEDED",
+        "DEPRECATED",
+        "RETIRED"
+      ],
+      "description": "Current lifecycle state of this principle. ACTIVE: currently governing execution. SUBORDINATED: temporarily muted by a higher-priority overlapping constraint; reversible via reactivatePrinciple(). SUPERSEDED: permanently replaced by a newer content-addressed principle. DEPRECATED: frozen for legacy replay only; blocked from new proposals. RETIRED: administratively removed from all future consideration. Only ACTIVE principles contribute to execution governance. Only ACTIVE principles are counted by aggregateEnvelopeCheck()."
+    },
+    "superseded_by": {
+      "type": "string",
+      "description": "Optional principle_id of the principle that superseded this one. Only set when lifecycle_state is SUPERSEDED. Provides lineage tracing between generations of related principles."
     }
   },
   "additionalProperties": false

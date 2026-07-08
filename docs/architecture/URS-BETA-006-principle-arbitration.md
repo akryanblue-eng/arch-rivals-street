@@ -283,6 +283,103 @@ Every `PrincipleResolutionRecord` is an edge in this graph.
 
 ---
 
+## Principle Lifecycle State Machine
+
+Arbitration and lifecycle are orthogonal dimensions.
+
+`conflict_type` records **why** the arbitration engine reached a decision.
+`applied_disposition` records **what lifecycle transition** was applied to the loser.
+
+A TAXONOMY_OVERRIDE conflict does not imply that the losing principle is
+permanently obsolete. A lower-rank heuristic suppressed by a higher-authority
+constraint may become valid again once the constraining condition clears. That
+is a different class of event from a principle being explicitly replaced by a
+newer version or formally removed by administrative review.
+
+### States
+
+```
+ACTIVE        — currently governing execution.
+SUBORDINATED  — temporarily muted by a higher-priority overlapping constraint.
+                Reversible: the principle may return to ACTIVE.
+SUPERSEDED    — permanently replaced by a newer content-addressed principle.
+                Terminal.
+DEPRECATED    — frozen for legacy replay only; blocked from new proposals.
+                Terminal from an active governance perspective.
+RETIRED       — administratively removed from all future consideration.
+                Terminal.
+```
+
+### Transitions
+
+```
+                  ┌──────────────────────────────┐
+                  │           ACTIVE             │
+                  └──┬───────────────────────────┘
+                     │                │
+     resolveConflict │                │ supersedePrinciple()
+     (SUBORDINATED)  │                │ deprecatePrinciple()
+                     ▼                │ retirePrinciple()
+                  ┌──────────────┐    │
+  reactivate ◄───►│ SUBORDINATED │    │
+  Principle()     └──────┬───────┘    │
+                         │            │
+          retirePrinciple│            ▼
+                         │     ┌─────────────┐
+                         └────►│  SUPERSEDED │  (terminal)
+                               │  DEPRECATED │  (terminal)
+                               │   RETIRED   │  (terminal)
+                               └─────────────┘
+```
+
+Key properties:
+- `SUBORDINATED` is the **only reversible** non-active state.
+- `SUPERSEDED`, `DEPRECATED`, and `RETIRED` are terminal.
+- `reactivatePrinciple()` only operates on `SUBORDINATED` entries. It returns
+  `undefined` for any other state, preventing accidental revival of
+  permanently retired principles.
+- `DEPRECATED` principles do not contribute to the aggregate envelope check.
+  Only `ACTIVE` principles count toward `MAX_AGGREGATE_TOLERANCE`.
+
+### Resolution → Disposition Mapping
+
+The arbitration engine currently produces `SUBORDINATED` for both pairwise
+conflict types. The `applied_disposition` field in `PrincipleResolutionRecord`
+keeps this explicit so that future conflict types can map to different
+dispositions without ambiguity:
+
+| Conflict type | Default disposition |
+|---|---|
+| `TAXONOMY_OVERRIDE` | `SUBORDINATED` |
+| `SPECIFICITY_COLLISION` | `SUBORDINATED` |
+
+Explicit lifecycle management functions produce the remaining dispositions:
+
+| Function | Disposition applied |
+|---|---|
+| `supersedePrinciple()` | `SUPERSEDED` |
+| `deprecatePrinciple()` | `DEPRECATED` |
+| `retirePrinciple()` | `RETIRED` |
+
+### Principle Lineage
+
+When a principle is superseded, the `superseded_by` field on the displaced
+entry records the `principle_id` of its replacement. This enables a directed
+lineage graph over generations of related principles:
+
+```
+Old Principle (SUPERSEDED)
+      │
+      │ superseded_by
+      ▼
+New Principle (ACTIVE)
+```
+
+An audit or meta-learning agent can reconstruct the full replacement chain by
+following `superseded_by` links forward from any historical entry.
+
+---
+
 ## Schemas
 
 Principle registry entries conform to:
@@ -307,10 +404,14 @@ Key functions:
 
 | Function | Responsibility |
 |---|---|
-| `registerPrinciple(class, scope, sourceEntryId, toleranceDelta?)` | Add a new active governing principle |
+| `registerPrinciple(class, scope, sourceEntryId, toleranceDelta?)` | Add a new ACTIVE governing principle |
 | `detectConflict(principleA, principleB)` | Classify whether two principles conflict |
-| `resolveConflict(principleA, principleB, conflictType)` | Arbitrate conflict; produce resolution record; subordinate loser |
-| `aggregateEnvelopeCheck(proposedDelta, principles)` | Guard against cumulative tolerance drift |
+| `resolveConflict(principleA, principleB, conflictType, disposition?)` | Arbitrate conflict; produce resolution record; apply disposition to loser (default: SUBORDINATED) |
+| `aggregateEnvelopeCheck(proposedDelta, principles)` | Guard against cumulative tolerance drift across ACTIVE principles |
+| `reactivatePrinciple(principleId)` | Transition a SUBORDINATED principle back to ACTIVE |
+| `supersedePrinciple(principleId, supersedingId?)` | Permanently replace a principle; record lineage |
+| `deprecatePrinciple(principleId)` | Freeze a principle for legacy replay only |
+| `retirePrinciple(principleId)` | Administratively remove a principle from all future consideration |
 | `dumpPrincipleRegistry()` | Return frozen copy of all registered principles |
 | `dumpResolutionLog()` | Return frozen copy of all arbitration records |
 
@@ -320,11 +421,15 @@ Key functions:
 
 Full proof is produced by Case 7 in `src/runSliceE.ts`.
 
-| Case | Conflict type | Winner | Meaning |
-|---|---|---|---|
-| 7a: Taxonomy override | `TAXONOMY_OVERRIDE` | `INTEGRITY_SHIELD` (LEVEL_0) | Fixed-point invariant always overrides behavioral heuristic (LEVEL_3) |
-| 7b: Specificity collision | `SPECIFICITY_COLLISION` | `NARROW_REPLAY_POLICY` | Narrower scope wins within the same taxonomy level |
-| 7c: Aggregation guard | `AGGREGATION_LIMIT` | N/A | 0.007 active + 0.004 proposed = 0.011 > 0.01 → `ENVELOPE_EXCEEDED` |
+| Case | Mechanism | Key assertion |
+|---|---|---|
+| 7a: Taxonomy override | `TAXONOMY_OVERRIDE` conflict | INTEGRITY_SHIELD (LEVEL_0) wins; PATHFINDING_HEURISTIC becomes `SUBORDINATED` |
+| 7b: Specificity collision | `SPECIFICITY_COLLISION` conflict | NARROW_REPLAY_POLICY wins; BROAD_MOVEMENT becomes `SUBORDINATED` |
+| 7c: Aggregation guard | `aggregateEnvelopeCheck()` | 0.007 active + 0.004 proposed = 0.011 > 0.01 → `ENVELOPE_EXCEEDED` |
+| 7d-1: Reactivation | `reactivatePrinciple()` | SUBORDINATED principle returns to ACTIVE; ACTIVE/SUPERSEDED/RETIRED reject the call |
+| 7d-2: Supersession | `supersedePrinciple()` | Principle becomes SUPERSEDED; `superseded_by` records the replacement for lineage tracing |
+| 7d-3: Deprecation | `deprecatePrinciple()` | DEPRECATED principle no longer counted by `aggregateEnvelopeCheck()` |
+| 7d-4: Retirement | `retirePrinciple()` | Principle becomes RETIRED; `reactivatePrinciple()` returns undefined (terminal state) |
 
 ---
 
@@ -339,6 +444,13 @@ The arbitration layer forces the question that the ungoverned path never asks:
 
 That question is a more stable foundation for long-lived autonomous systems than
 the default: accumulate principles until their interactions become unpredictable.
+
+The lifecycle state machine extends this to a second question:
+
+> Is this principle temporarily suppressed by a context-dependent constraint,
+> or is it permanently obsolete?
+
+Those are different answers that require different representations.
 
 ---
 

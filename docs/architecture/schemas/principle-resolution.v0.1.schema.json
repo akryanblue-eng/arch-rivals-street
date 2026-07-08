@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "principle-resolution.v0.1.schema.json",
   "title": "PrincipleResolutionRecord",
-  "description": "Immutable record of a principle arbitration decision produced by AEP-MEM-003. Every principle conflict is logged — the system never silently chooses. The losing principle is subordinated (active set to false in the registry) but preserved as a historical record. The resolution creates a first-class causal link between the two principles and records the justification for the outcome.",
+  "description": "Immutable record of a principle arbitration decision produced by AEP-MEM-003. Every principle conflict is logged — the system never silently chooses. The losing principle receives the applied_disposition lifecycle transition but is preserved as a historical record. The resolution creates a first-class causal link between the two principles and records both the arbitration reason (conflict_type) and the lifecycle outcome (applied_disposition) as separate fields.",
   "type": "object",
   "required": [
     "resolution_id",
@@ -11,6 +11,7 @@
     "conflict_type",
     "winner",
     "loser",
+    "applied_disposition",
     "justification"
   ],
   "properties": {
@@ -34,15 +35,25 @@
         "SPECIFICITY_COLLISION",
         "AGGREGATION_LIMIT"
       ],
-      "description": "Classification of the conflict that required arbitration. TAXONOMY_OVERRIDE: the two principles sit at different taxonomy hierarchy levels; the higher-authority level wins unconditionally. SPECIFICITY_COLLISION: the two principles sit at the same taxonomy level but cover different scope widths; the narrower (more specific) scope wins. AGGREGATION_LIMIT: no single pairwise conflict, but the combined tolerance contributions of multiple active principles would breach the global invariant envelope; detected by aggregateEnvelopeCheck(), not recorded as a pairwise resolution."
+      "description": "Classification of the conflict that required arbitration. Records why the arbitration engine reached a decision. TAXONOMY_OVERRIDE: the two principles sit at different taxonomy hierarchy levels; the higher-authority level wins unconditionally. SPECIFICITY_COLLISION: the two principles sit at the same taxonomy level but cover different scope widths; the narrower (more specific) scope wins. AGGREGATION_LIMIT: no single pairwise conflict, but the combined tolerance contributions of multiple active principles would breach the global invariant envelope; detected by aggregateEnvelopeCheck(), not recorded as a pairwise resolution."
     },
     "winner": {
       "type": "string",
-      "description": "principle_id of the principle whose constraint prevails. Remains active in the registry."
+      "description": "principle_id of the principle whose constraint prevails. Remains ACTIVE in the registry."
     },
     "loser": {
       "type": "string",
-      "description": "principle_id of the subordinated principle. Marked inactive in the registry. The principle entry itself is preserved as an immutable historical record."
+      "description": "principle_id of the principle that was displaced. Receives the applied_disposition lifecycle transition. The principle entry itself is preserved as an immutable historical record."
+    },
+    "applied_disposition": {
+      "type": "string",
+      "enum": [
+        "SUBORDINATED",
+        "SUPERSEDED",
+        "DEPRECATED",
+        "RETIRED"
+      ],
+      "description": "Lifecycle disposition applied to the losing principle as a result of this arbitration event. Records what happened to the loser, independently of why the arbitration was triggered (conflict_type). SUBORDINATED: the loser is temporarily suppressed and may return to ACTIVE. SUPERSEDED: the loser is permanently replaced. DEPRECATED: the loser is frozen for legacy replay only. RETIRED: the loser is removed from all future consideration. The default for pairwise arbitration conflicts (TAXONOMY_OVERRIDE, SPECIFICITY_COLLISION) is SUBORDINATED."
     },
     "justification": {
       "type": "object",

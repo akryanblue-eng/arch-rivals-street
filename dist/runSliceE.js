@@ -445,8 +445,9 @@ function run() {
     console.log(JSON.stringify(taxonomyResolution, null, 2));
     assert(taxonomyResolution.winner === integrityShield.principle_id, "Case 7a: LEVEL_0 principle must win over LEVEL_3");
     assert(taxonomyResolution.loser === pathfindingHeuristic.principle_id, "Case 7a: LEVEL_3 principle must be subordinated");
-    assert(!pathfindingHeuristic.active, "Case 7a: losing principle must be marked inactive");
-    assert(integrityShield.active, "Case 7a: winning principle must remain active");
+    assert(taxonomyResolution.applied_disposition === "SUBORDINATED", "Case 7a: applied_disposition must be SUBORDINATED for TAXONOMY_OVERRIDE");
+    assert(pathfindingHeuristic.lifecycle_state === "SUBORDINATED", "Case 7a: losing principle must be SUBORDINATED (dynamically muted, not permanently retired)");
+    assert(integrityShield.lifecycle_state === "ACTIVE", "Case 7a: winning principle must remain ACTIVE");
     sliceOutcomes.push({
         case: "principle_taxonomy_override",
         decision: "RESOLVED",
@@ -474,8 +475,9 @@ function run() {
     console.log(JSON.stringify(specificityResolution, null, 2));
     assert(specificityResolution.winner === narrowReplayPolicy.principle_id, "Case 7b: narrower scope descriptor must win");
     assert(specificityResolution.loser === broadMovementPolicy.principle_id, "Case 7b: broader scope descriptor must be subordinated");
-    assert(!broadMovementPolicy.active, "Case 7b: losing principle must be marked inactive");
-    assert(narrowReplayPolicy.active, "Case 7b: winning principle must remain active");
+    assert(specificityResolution.applied_disposition === "SUBORDINATED", "Case 7b: applied_disposition must be SUBORDINATED for SPECIFICITY_COLLISION");
+    assert(broadMovementPolicy.lifecycle_state === "SUBORDINATED", "Case 7b: losing principle must be SUBORDINATED");
+    assert(narrowReplayPolicy.lifecycle_state === "ACTIVE", "Case 7b: winning principle must remain ACTIVE");
     sliceOutcomes.push({
         case: "principle_specificity_collision",
         decision: "RESOLVED",
@@ -502,12 +504,104 @@ function run() {
     const envelopeCheckExceeded = (0, AepPrincipleRegistry_1.aggregateEnvelopeCheck)(0.004, (0, AepPrincipleRegistry_1.dumpPrincipleRegistry)());
     console.log(`Case 7c — envelope check (0.007 active + 0.004 proposed, limit ${AepPrincipleRegistry_1.MAX_AGGREGATE_TOLERANCE}): ${envelopeCheckExceeded}`);
     assert(envelopeCheckExceeded === "ENVELOPE_EXCEEDED", "Case 7c: 0.007 + 0.004 must be ENVELOPE_EXCEEDED");
-    assert(tolerancePrincipleA.active, "Case 7c: tolerance principle A must remain active (not subordinated)");
-    assert(tolerancePrincipleB.active, "Case 7c: tolerance principle B must remain active (not subordinated)");
+    assert(tolerancePrincipleA.lifecycle_state === "ACTIVE", "Case 7c: tolerance principle A must remain ACTIVE (not subordinated)");
+    assert(tolerancePrincipleB.lifecycle_state === "ACTIVE", "Case 7c: tolerance principle B must remain ACTIVE (not subordinated)");
     sliceOutcomes.push({
         case: "principle_aggregation_guard",
         decision: "ENVELOPE_EXCEEDED",
         reason: "AGGREGATION_LIMIT",
+    });
+    // ── Case 7d: Lifecycle State Machine ─────────────────────────────────────
+    //
+    // Validates the lifecycle state transitions that make the governance model
+    // expressive beyond binary active/inactive:
+    //
+    //   Case 7d-1: SUBORDINATED → ACTIVE (reactivation)
+    //     The pathfinding heuristic was SUBORDINATED by Case 7a because an
+    //     overlapping LEVEL_0 constraint was active. That suppression is
+    //     context-dependent, not permanent. Demonstrate that the principle
+    //     can return to ACTIVE via reactivatePrinciple().
+    //
+    //   Case 7d-2: ACTIVE → SUPERSEDED (permanent replacement)
+    //     A newer, more precise principle permanently replaces the broad
+    //     movement policy. Unlike subordination, supersession is terminal:
+    //     the old principle records the ID of its replacement for lineage
+    //     tracing. Demonstrate supersedePrinciple() and that the superseded
+    //     entry cannot be reactivated.
+    //
+    //   Case 7d-3: ACTIVE → DEPRECATED (legacy freeze)
+    //     An older tolerance principle is frozen for historical replay only;
+    //     it no longer governs new proposals.
+    //
+    //   Case 7d-4: SUBORDINATED → RETIRED (administrative removal)
+    //     The narrow replay policy is formally retired through administrative
+    //     review, isolating it from all future consideration.
+    // ── Case 7d-1: Reactivation (SUBORDINATED → ACTIVE) ─────────────────────
+    console.log("\nCase 7d-1 — before reactivation:");
+    console.log(`pathfindingHeuristic.lifecycle_state = ${pathfindingHeuristic.lifecycle_state}`);
+    assert(pathfindingHeuristic.lifecycle_state === "SUBORDINATED", "Case 7d-1: pathfinding heuristic must be SUBORDINATED before reactivation");
+    const reactivated = (0, AepPrincipleRegistry_1.reactivatePrinciple)(pathfindingHeuristic.principle_id);
+    assert(reactivated !== undefined, "Case 7d-1: reactivatePrinciple must return the entry for a SUBORDINATED principle");
+    assert(pathfindingHeuristic.lifecycle_state === "ACTIVE", "Case 7d-1: reactivated principle must return to ACTIVE");
+    // Reactivating an already-ACTIVE principle is a no-op.
+    const reactivateActiveNoOp = (0, AepPrincipleRegistry_1.reactivatePrinciple)(integrityShield.principle_id);
+    assert(reactivateActiveNoOp === undefined, "Case 7d-1: reactivatePrinciple on a non-SUBORDINATED principle must return undefined");
+    console.log(`pathfindingHeuristic.lifecycle_state after reactivation = ${pathfindingHeuristic.lifecycle_state}`);
+    sliceOutcomes.push({
+        case: "principle_lifecycle_reactivation",
+        decision: "REACTIVATED",
+        reason: "SUBORDINATED_TO_ACTIVE",
+    });
+    // ── Case 7d-2: Supersession (ACTIVE → SUPERSEDED) ────────────────────────
+    //
+    // Register a replacement for broadMovementPolicy (which was SUBORDINATED
+    // in Case 7b). Supersession is permanent — unlike subordination.
+    const improvedMovementPolicy = (0, AepPrincipleRegistry_1.registerPrinciple)("LEVEL_3_BEHAVIORAL_OPTIMIZATION", "Optimize player movement efficiency with validated trajectory sampling.", promotedEntry6d.entry_id);
+    console.log("\nCase 7d-2 — superseding broad movement policy:");
+    const superseded = (0, AepPrincipleRegistry_1.supersedePrinciple)(broadMovementPolicy.principle_id, improvedMovementPolicy.principle_id);
+    assert(superseded !== undefined, "Case 7d-2: supersedePrinciple must return the entry");
+    assert(broadMovementPolicy.lifecycle_state === "SUPERSEDED", "Case 7d-2: superseded principle must have lifecycle_state SUPERSEDED");
+    assert(broadMovementPolicy.superseded_by === improvedMovementPolicy.principle_id, "Case 7d-2: superseded_by must reference the replacing principle for lineage tracing");
+    // A SUPERSEDED principle cannot be reactivated.
+    const reactivateSupersededNoOp = (0, AepPrincipleRegistry_1.reactivatePrinciple)(broadMovementPolicy.principle_id);
+    assert(reactivateSupersededNoOp === undefined, "Case 7d-2: reactivatePrinciple on a SUPERSEDED principle must return undefined (terminal state)");
+    console.log(`broadMovementPolicy.lifecycle_state = ${broadMovementPolicy.lifecycle_state}`);
+    console.log(`broadMovementPolicy.superseded_by = ${broadMovementPolicy.superseded_by}`);
+    sliceOutcomes.push({
+        case: "principle_lifecycle_supersession",
+        decision: "SUPERSEDED",
+        reason: "PERMANENT_REPLACEMENT",
+    });
+    // ── Case 7d-3: Deprecation (ACTIVE → DEPRECATED) ─────────────────────────
+    console.log("\nCase 7d-3 — deprecating tolerance principle A:");
+    const deprecated = (0, AepPrincipleRegistry_1.deprecatePrinciple)(tolerancePrincipleA.principle_id);
+    assert(deprecated !== undefined, "Case 7d-3: deprecatePrinciple must return the entry");
+    assert(tolerancePrincipleA.lifecycle_state === "DEPRECATED", "Case 7d-3: deprecated principle must have lifecycle_state DEPRECATED");
+    // A DEPRECATED principle no longer contributes to the aggregate envelope.
+    const envelopeAfterDeprecation = (0, AepPrincipleRegistry_1.aggregateEnvelopeCheck)(0.004, (0, AepPrincipleRegistry_1.dumpPrincipleRegistry)());
+    // After deprecation of tolerancePrincipleA (0.003): only tolerancePrincipleB
+    // (0.004) is ACTIVE. 0.004 + 0.004 = 0.008 ≤ 0.01 → WITHIN_ENVELOPE.
+    assert(envelopeAfterDeprecation === "WITHIN_ENVELOPE", "Case 7d-3: DEPRECATED principle must not count toward aggregate envelope (0.004 active + 0.004 proposed = WITHIN_ENVELOPE)");
+    console.log(`tolerancePrincipleA.lifecycle_state = ${tolerancePrincipleA.lifecycle_state}`);
+    console.log(`envelope after deprecation (0.004 ACTIVE + 0.004 proposed): ${envelopeAfterDeprecation}`);
+    sliceOutcomes.push({
+        case: "principle_lifecycle_deprecation",
+        decision: "DEPRECATED",
+        reason: "LEGACY_FREEZE",
+    });
+    // ── Case 7d-4: Retirement (SUBORDINATED → RETIRED) ───────────────────────
+    console.log("\nCase 7d-4 — retiring narrow replay policy:");
+    const retired = (0, AepPrincipleRegistry_1.retirePrinciple)(narrowReplayPolicy.principle_id);
+    assert(retired !== undefined, "Case 7d-4: retirePrinciple must return the entry");
+    assert(narrowReplayPolicy.lifecycle_state === "RETIRED", "Case 7d-4: retired principle must have lifecycle_state RETIRED");
+    // A RETIRED principle cannot be reactivated.
+    const reactivateRetiredNoOp = (0, AepPrincipleRegistry_1.reactivatePrinciple)(narrowReplayPolicy.principle_id);
+    assert(reactivateRetiredNoOp === undefined, "Case 7d-4: reactivatePrinciple on a RETIRED principle must return undefined (terminal state)");
+    console.log(`narrowReplayPolicy.lifecycle_state = ${narrowReplayPolicy.lifecycle_state}`);
+    sliceOutcomes.push({
+        case: "principle_lifecycle_retirement",
+        decision: "RETIRED",
+        reason: "ADMINISTRATIVE_REMOVAL",
     });
     // ── Evidence record ───────────────────────────────────────────────────────
     const evidence = (0, evolutionReplayAudit_1.buildEvidenceRecord)(sliceOutcomes);

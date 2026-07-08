@@ -12,6 +12,30 @@
 // AEP-MEM-003 answers: "What happens when two validated conclusions both
 //                        apply, but they disagree?"
 //
+// Lifecycle model:
+//
+//   Arbitration (why a decision was reached) and lifecycle (what happens to
+//   the principle) are separate dimensions. resolveConflict() determines the
+//   conflict type (TAXONOMY_OVERRIDE, SPECIFICITY_COLLISION) and assigns the
+//   loser a disposition (SUBORDINATED by default). The lifecycle state machine
+//   then governs further transitions independently.
+//
+//   ACTIVE       — governing execution. The principle is the current authority
+//                  for its execution vector.
+//   SUBORDINATED — dynamically muted. Structurally valid but temporarily
+//                  dormant because a higher-priority overlapping constraint is
+//                  actively governing the same execution vector. Reversible:
+//                  the principle may return to ACTIVE once the constraining
+//                  condition is no longer in force (reactivatePrinciple).
+//   SUPERSEDED   — cryptographically retired. A newer content-addressed
+//                  principle has claimed full logical replacement. Permanent
+//                  across all subsequent epochs.
+//   DEPRECATED   — frozen for legacy compatibility. Retained as a fallback
+//                  for historical replay trajectories; blocked from
+//                  intervening in new proposals.
+//   RETIRED      — formally purged via administrative review. Isolated from
+//                  all future consideration.
+//
 // API surface:
 //
 //   registerPrinciple()      — add a new active governing principle derived
@@ -26,6 +50,15 @@
 //                              active principles remains within the global
 //                              invariant envelope before a new principle is
 //                              promoted.
+//   reactivatePrinciple()    — transition a SUBORDINATED principle back to
+//                              ACTIVE once the overriding constraint has
+//                              cleared.
+//   supersedePrinciple()     — permanently retire a principle because a newer
+//                              rule has claimed full logical replacement.
+//   deprecatePrinciple()     — freeze a principle for legacy replay only;
+//                              block it from intervening in new proposals.
+//   retirePrinciple()        — administratively remove a principle from all
+//                              future consideration.
 
 import { createHash } from "crypto";
 
@@ -65,14 +98,45 @@ export type ConflictType =
   | "SPECIFICITY_COLLISION"
   | "AGGREGATION_LIMIT";
 
+// Lifecycle state of a governing principle.
+//
+// Arbitration (why a decision was reached) and lifecycle (what happens to
+// the principle) are orthogonal. resolveConflict() sets the loser to
+// SUBORDINATED. Independent lifecycle transitions — SUPERSEDED, DEPRECATED,
+// RETIRED — are managed via the explicit lifecycle functions.
+//
+// ACTIVE       — currently governing execution.
+// SUBORDINATED — temporarily muted by a higher-priority overlapping constraint.
+//                Reversible: may return to ACTIVE via reactivatePrinciple().
+// SUPERSEDED   — permanently replaced by a newer content-addressed principle.
+// DEPRECATED   — frozen for legacy replay only; blocked from new proposals.
+// RETIRED      — administratively removed from all future consideration.
+export type PrincipleLifecycleState =
+  | "ACTIVE"
+  | "SUBORDINATED"
+  | "SUPERSEDED"
+  | "DEPRECATED"
+  | "RETIRED";
+
+// Lifecycle disposition assigned to the losing principle in an arbitration
+// record, or to any principle via an explicit lifecycle transition.
+// Kept as a separate type from PrincipleLifecycleState so that ACTIVE is
+// not a valid disposition (you never "dispose" a principle into ACTIVE).
+export type PrincipleLifecycleDisposition =
+  | "SUBORDINATED"
+  | "SUPERSEDED"
+  | "DEPRECATED"
+  | "RETIRED";
+
 // A governing principle extracted from a promoted governance decision.
 //
 // Principles are immutable once registered — their content (principle_id,
 // class, scope, source) never changes. Arbitration outcome is recorded via
 // PrincipleResolutionRecord rather than by modifying the principle itself.
-// The exception is the `active` flag, which is set to false by resolveConflict
-// when this principle is subordinated, matching the existing ledger pattern of
-// preserving the historical record while marking the judgment as superseded.
+// The `lifecycle_state` field is the only mutable field: it advances through
+// the lifecycle state machine as arbitration and lifecycle management events
+// occur. This preserves the principle as a historical record while accurately
+// representing its current governance role.
 export interface PrincipleEntry {
   // SHA-256 content address derived from principle_class, scope_descriptor,
   // and source_entry_id. Two identical principles produce the same ID.
@@ -90,13 +154,22 @@ export interface PrincipleEntry {
   // so aggregateEnvelopeCheck() can sum contributions across all active
   // principles and detect cumulative drift before it breaches the invariant.
   tolerance_delta?: number;
-  // False once this principle is subordinated by a PrincipleResolutionRecord.
-  // Subordinated principles are preserved in the registry as historical records.
-  active: boolean;
+  // Current lifecycle state. Advances through the lifecycle state machine.
+  // Only ACTIVE principles contribute to execution governance.
+  // Only SUBORDINATED principles may return to ACTIVE via reactivatePrinciple().
+  lifecycle_state: PrincipleLifecycleState;
+  // Optional principle_id of the principle that superseded this one.
+  // Only set when lifecycle_state is SUPERSEDED.
+  superseded_by?: string;
 }
 
 // Immutable record of a principle arbitration decision.
 // Every arbitration is logged — the system never silently chooses.
+//
+// Arbitration (conflict_type) and lifecycle (applied_disposition) are
+// recorded as separate fields: the arbitration engine determines which rule
+// wins and why; the disposition field records what lifecycle transition was
+// applied to the loser as a result.
 export interface PrincipleResolutionRecord {
   // SHA-256 content address derived from principle_a, principle_b,
   // conflict_type, and winner.
@@ -105,7 +178,12 @@ export interface PrincipleResolutionRecord {
   principle_b: string;        // principle_id of second participant
   conflict_type: ConflictType;
   winner: string;             // principle_id of the winning principle
-  loser: string;              // principle_id of the subordinated principle
+  loser: string;              // principle_id of the principle that was displaced
+  // Lifecycle disposition applied to the loser. Records what state transition
+  // was executed as a result of this arbitration event. Separating this from
+  // conflict_type allows the arbitration engine to remain focused on why a
+  // decision was reached while lifecycle policy governs what happens next.
+  applied_disposition: PrincipleLifecycleDisposition;
   justification: {
     // Human-readable explanation of why the winner prevailed.
     priority_delta: string;
@@ -180,7 +258,7 @@ export function registerPrinciple(
     scope_descriptor: scopeDescriptor,
     source_entry_id: sourceEntryId,
     ...(toleranceDelta !== undefined && { tolerance_delta: toleranceDelta }),
-    active: true,
+    lifecycle_state: "ACTIVE",
   };
   principleRegistry.push(entry);
   return entry;
@@ -220,10 +298,10 @@ export function detectConflict(
 
 // AEP-MEM-003: Resolve a detected conflict between two principles.
 //
-// Produces a PrincipleResolutionRecord and marks the losing principle inactive
-// in the registry. The losing principle is preserved as an immutable historical
-// record — this matches the existing ledger invariant of never overwriting the
-// original judgment.
+// Produces a PrincipleResolutionRecord and applies the given disposition to
+// the losing principle in the registry. The losing principle is preserved as
+// an immutable historical record — this matches the existing ledger invariant
+// of never overwriting the original judgment.
 //
 // Resolution rules by conflict type:
 //   TAXONOMY_OVERRIDE     — the principle with the lower taxonomy rank
@@ -231,11 +309,18 @@ export function detectConflict(
 //   SPECIFICITY_COLLISION — the principle with the narrower (longer)
 //                           scope descriptor wins.
 //
+// The disposition parameter controls the lifecycle transition applied to the
+// loser. It defaults to SUBORDINATED (reversible suppression) because
+// pairwise arbitration conflicts are typically runtime context-dependent
+// rather than permanent replacements. Pass SUPERSEDED explicitly when the
+// losing principle is known to be permanently obsolete.
+//
 // AGGREGATION_LIMIT is not resolved pairwise; use aggregateEnvelopeCheck().
 export function resolveConflict(
   principleA: PrincipleEntry,
   principleB: PrincipleEntry,
-  conflictType: ConflictType
+  conflictType: ConflictType,
+  disposition: PrincipleLifecycleDisposition = "SUBORDINATED"
 ): PrincipleResolutionRecord {
   let winner: PrincipleEntry;
   let loser: PrincipleEntry;
@@ -283,19 +368,20 @@ export function resolveConflict(
     conflict_type: conflictType,
     winner: winner.principle_id,
     loser: loser.principle_id,
+    applied_disposition: disposition,
     justification: {
       priority_delta: priorityDelta,
       simulation_verified: true,
     },
   };
 
-  // Subordinate the loser in the registry.
-  // The principle entry is preserved; only its active flag changes.
+  // Apply the lifecycle disposition to the loser in the registry.
+  // The principle entry is preserved; only its lifecycle_state changes.
   const loserEntry = principleRegistry.find(
     (p) => p.principle_id === loser.principle_id
   );
   if (loserEntry !== undefined) {
-    loserEntry.active = false;
+    loserEntry.lifecycle_state = disposition;
   }
 
   resolutionLog.push(record);
@@ -310,7 +396,7 @@ export function resolveConflict(
 //
 // Control flow:
 //
-//   currentSum = Σ tolerance_delta for all active principles
+//   currentSum = Σ tolerance_delta for all ACTIVE principles
 //        │
 //   ┌────┴──────────────────────────────┐
 //   │                                   │
@@ -329,12 +415,96 @@ export function aggregateEnvelopeCheck(
   principles: readonly PrincipleEntry[]
 ): "WITHIN_ENVELOPE" | "ENVELOPE_EXCEEDED" {
   const currentSum = principles
-    .filter((p) => p.active && p.tolerance_delta !== undefined)
+    .filter((p) => p.lifecycle_state === "ACTIVE" && p.tolerance_delta !== undefined)
     .reduce((acc, p) => acc + (p.tolerance_delta as number), 0);
 
   return currentSum + proposedDelta <= MAX_AGGREGATE_TOLERANCE
     ? "WITHIN_ENVELOPE"
     : "ENVELOPE_EXCEEDED";
+}
+
+// Transition a SUBORDINATED principle back to ACTIVE.
+//
+// SUBORDINATED is the only reversible non-active lifecycle state. A principle
+// suppressed by a higher-priority overlapping constraint may become valid
+// again when the constraining condition is no longer in force (e.g. the
+// LEVEL_0 constraint that suppressed a LEVEL_3 heuristic is itself superseded
+// by a new boundary condition). Attempting to reactivate a principle that is
+// not currently SUBORDINATED is a no-op and returns undefined.
+export function reactivatePrinciple(
+  principleId: string
+): PrincipleEntry | undefined {
+  const entry = principleRegistry.find(
+    (p) => p.principle_id === principleId
+  );
+  if (entry === undefined || entry.lifecycle_state !== "SUBORDINATED") {
+    return undefined;
+  }
+  entry.lifecycle_state = "ACTIVE";
+  return entry;
+}
+
+// Permanently retire a principle because a newer content-addressed principle
+// has claimed full logical replacement. Sets lifecycle_state to SUPERSEDED
+// and records the superseding principle's ID for lineage tracing.
+//
+// SUPERSEDED is terminal: a superseded principle cannot be reactivated. Its
+// historical record is preserved for audit and lineage reconstruction.
+export function supersedePrinciple(
+  principleId: string,
+  supersedingPrincipleId?: string
+): PrincipleEntry | undefined {
+  const entry = principleRegistry.find(
+    (p) => p.principle_id === principleId
+  );
+  if (entry === undefined) {
+    return undefined;
+  }
+  entry.lifecycle_state = "SUPERSEDED";
+  if (supersedingPrincipleId !== undefined) {
+    entry.superseded_by = supersedingPrincipleId;
+  }
+  return entry;
+}
+
+// Freeze a principle for legacy compatibility. Sets lifecycle_state to
+// DEPRECATED. Deprecated principles are retained as fallback routes for
+// historical replay trajectory evaluation but are blocked from intervening
+// in new simulation proposals.
+//
+// DEPRECATED is terminal from the perspective of active governance but not
+// from the perspective of historical record. Use retirePrinciple() to fully
+// remove a principle from future consideration.
+export function deprecatePrinciple(
+  principleId: string
+): PrincipleEntry | undefined {
+  const entry = principleRegistry.find(
+    (p) => p.principle_id === principleId
+  );
+  if (entry === undefined) {
+    return undefined;
+  }
+  entry.lifecycle_state = "DEPRECATED";
+  return entry;
+}
+
+// Formally purge a principle via administrative review. Sets lifecycle_state
+// to RETIRED. Retired principles are isolated from all future consideration
+// including historical replay. This is an administrative terminal state
+// reached through deliberate review — not a consequence of runtime conflict.
+//
+// RETIRED is terminal.
+export function retirePrinciple(
+  principleId: string
+): PrincipleEntry | undefined {
+  const entry = principleRegistry.find(
+    (p) => p.principle_id === principleId
+  );
+  if (entry === undefined) {
+    return undefined;
+  }
+  entry.lifecycle_state = "RETIRED";
+  return entry;
 }
 
 // Return a frozen copy of the principle registry.
