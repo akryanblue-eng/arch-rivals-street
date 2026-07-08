@@ -92,10 +92,7 @@ event in the RIG ledger. One history. Multiple projections.
 
 ## Commit
 
-`PLACEHOLDER`
-
-Replace `PLACEHOLDER` with the output of `git rev-parse --short HEAD` after the
-initial commit of the AEP files. A follow-up commit binds this reference.
+`4b19d4d`
 
 ---
 
