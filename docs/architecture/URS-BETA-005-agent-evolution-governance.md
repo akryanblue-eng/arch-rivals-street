@@ -192,19 +192,32 @@ RIG ledger entry (failure event)
           ↓
 AgentEvolutionProtocol.propose()
           ↓
+AEP-MEM-001 memory query
+          ↓
+  ┌──────────────────────┐
+  │ NOVEL_INTERVENTION    │  ← proceed to simulation
+  │ PRIOR_SUCCESS         │  ← proceed to simulation
+  │ PRIOR_FAILURE         │  ← DO_NOT_RETRY (halt)
+  │ PRIOR_REJECTION       │  ← DO_NOT_RETRY (halt)
+  └──────────────────────┘
+         ↓ (if proceeding)
 EvolvableComponent ladder check
-          ↓
+         ↓
 AEP simulation run
-          ↓
+         ↓
   ┌───────────────┐
   │ BLOCKED        │  ← simulation failed
   │ REJECTED       │  ← simulation passed, no improvement
   │ PROMOTED       │  ← simulation passed, improvement confirmed
   └───────────────┘
-          ↓
+         ↓
 evolutionReplayAudit.record()
-          ↓
+         ↓
 RIG ledger (AEP outcome event)
+         ↓
+AepDecisionLedger.appendEntry()
+         ↓
+Decision ledger (causal record)
 ```
 
 ---

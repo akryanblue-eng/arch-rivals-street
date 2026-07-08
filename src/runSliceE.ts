@@ -3,12 +3,16 @@
 //
 // Decision trace for each outcome:
 //   Input Experience → RIG Ledger Evidence → Diagnosis →
-//   Evolution Proposal → Simulation Result → Governance Decision → Audit Record
+//   AEP-MEM-001 Memory Query → Novel / Known →
+//   Evolution Proposal → Simulation Result → Governance Decision →
+//   Audit Record → Append causal record to Decision Ledger
 //
-// Three canonical cases:
-//   Case 1: Retrieval fix        → IMPROVED  (0.60→0.00) → PROMOTED
-//   Case 2: Base-model retrain   → Not justified          → REJECTED (MODEL_CHANGE_NOT_JUSTIFIED)
-//   Case 3: Tool-policy change   → REGRESSED (0.60→0.80) → BLOCKED
+// Five canonical cases:
+//   Case 1: Retrieval fix            → IMPROVED  (0.60→0.00) → PROMOTED
+//   Case 2: Base-model retrain       → Not justified          → REJECTED (MODEL_CHANGE_NOT_JUSTIFIED)
+//   Case 3: Tool-policy change       → REGRESSED (0.60→0.80) → BLOCKED
+//   Case 4: Historical restraint     → AEP-MEM-001 PRIOR_FAILURE → HALTED (no simulation)
+//   Case 5: Novel exploration        → AEP-MEM-001 NOVEL_INTERVENTION → IMPROVED (0.45→0.10) → PROMOTED
 //
 // Adversarial audit:
 //   Direct-deploy attempt without AEP simulation            → DETECTED
@@ -227,6 +231,121 @@ function run(): void {
     }
   );
 
+  // ── Case 4: Historical restraint ─────────────────────────────────────────
+  //
+  // Input Experience:  A second actor attempts to re-propose the same
+  //                    TOOL_POLICY change that was BLOCKED in Case 3.
+  // AEP-MEM-001:       The evolution loop queries the decision ledger before
+  //                    committing to simulation. The ledger returns PRIOR_FAILURE
+  //                    (Case 3's BLOCKED outcome) and recommends
+  //                    DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE.
+  // Governance:        Memory gate halts the proposal. No simulation is run.
+  //                    The evolution loop does not proceed.
+  // Why this matters:  Prevents an optimizer from slightly renaming a known-
+  //                    harmful proposal and re-attempting it indefinitely.
+
+  const historicalRestraintQuery = queryPriorIntervention({
+    target_subsystem: "TOOL_POLICY",
+    proposal_class: "write APIs",
+  });
+
+  console.log("\nCase 4 — TOOL_POLICY re-attempt (historical restraint):");
+  console.log(JSON.stringify(historicalRestraintQuery, null, 2));
+
+  assert(
+    historicalRestraintQuery.result === "PRIOR_FAILURE",
+    "Case 4: memory query must return PRIOR_FAILURE for blocked tool policy"
+  );
+  assert(
+    historicalRestraintQuery.recommended_action === "DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE",
+    "Case 4: memory gate must recommend DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE"
+  );
+
+  sliceOutcomes.push({
+    case: "tool_policy_reattempt_halted",
+    decision: "HALTED_BY_MEMORY",
+    reason: "DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE",
+  });
+
+  // ── Case 5: Novel exploration ─────────────────────────────────────────────
+  //
+  // Input Experience:  New failure class — agent planner producing suboptimal
+  //                    execution plans under resource contention.
+  // RIG Ledger:        Failure event rig-failure-2026-07-08-003 logged with
+  //                    error rate 0.45 on the replay window.
+  // AEP-MEM-001:       The evolution loop queries the decision ledger. No prior
+  //                    history exists for this intervention. Returns
+  //                    NOVEL_INTERVENTION → PROCEED_TO_SIMULATION.
+  // Simulation:        Replay against failure window → error rate 0.10.
+  // Governance:        IMPROVED → PROMOTED.
+  // Audit:             appendEntry records the verdict; future queries for this
+  //                    intervention class will find this result in the ledger.
+  // Why this matters:  A memory system that only blocks becomes a prison. Novel
+  //                    paths must be allowed through; the ledger learns from them.
+
+  const novelExplorationQuery = queryPriorIntervention({
+    target_subsystem: "PLANNER",
+    proposal_class: "reorder planning steps",
+  });
+
+  console.log("\nCase 5 — PLANNER novel intervention (novel exploration):");
+  console.log(JSON.stringify(novelExplorationQuery, null, 2));
+
+  assert(
+    novelExplorationQuery.result === "NOVEL_INTERVENTION",
+    "Case 5: memory query must return NOVEL_INTERVENTION for novel planner intervention"
+  );
+  assert(
+    novelExplorationQuery.recommended_action === "PROCEED_TO_SIMULATION",
+    "Case 5: novel intervention must be cleared for PROCEED_TO_SIMULATION"
+  );
+
+  const plannerProposal: AepProposal = {
+    proposalId: "prop-050",
+    component: "PLANNER",
+    change: "Reorder planning steps to check tool availability before resource allocation.",
+    ledgerRef: "rig-failure-2026-07-08-003",
+  };
+
+  recordProposalCreated(plannerProposal);
+
+  const plannerDecision = propose(plannerProposal, () => ({
+    baselineErrorRate: 0.45,
+    candidateErrorRate: 0.10,
+    harmful: false,
+  }));
+
+  const plannerEvent = record(plannerDecision);
+
+  console.log(
+    `Case 5 — PLANNER: ${plannerDecision.outcome}` +
+      ` [${plannerDecision.simulationResult?.label}` +
+      ` ${plannerDecision.simulationResult?.baselineErrorRate}→` +
+      `${plannerDecision.simulationResult?.candidateErrorRate}]`
+  );
+
+  assert(plannerDecision.outcome === "PROMOTED", "Case 5 must be PROMOTED");
+  assert(plannerDecision.simulationResult?.label === "IMPROVED", "Case 5 simulation must be IMPROVED");
+  assert(plannerEvent.eventType === "aep.proposal.promoted", "Case 5 event type");
+
+  sliceOutcomes.push({
+    case: "planner_novel_exploration",
+    decision: "PROMOTED",
+    simulation: "IMPROVED",
+    before: plannerDecision.simulationResult!.baselineErrorRate,
+    after: plannerDecision.simulationResult!.candidateErrorRate,
+  });
+
+  appendEntry(
+    plannerDecision,
+    "Planner producing suboptimal execution order under resource contention.",
+    {
+      failure_class: "PLANNER_EXECUTION_ORDER_DEGRADATION",
+      affected_metric: "execution_error_rate",
+      origin_event_hash: plannerProposal.ledgerRef,
+    }
+  );
+
   // ── Adversarial audit: tampered-ledger direct-deploy attempt ────────────
   //
   // An actor attempts to deploy a change by calling deploy logic directly,
@@ -262,44 +381,6 @@ function run(): void {
   const decisionLedgerEntries = dumpDecisionLedger();
   console.log(`\nAEP Decision Ledger entries: ${decisionLedgerEntries.length}`);
   console.log(JSON.stringify(decisionLedgerEntries, null, 2));
-
-  // ── AEP-MEM-001: Memory query contract ───────────────────────────────────
-  //
-  // Before re-attempting an intervention, the evolution loop queries the ledger
-  // to avoid repeating known failures. If a prior verdict was BLOCKED or
-  // REJECTED the query returns DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE.
-
-  // Query 1: Known blocked intervention — should not be retried.
-  const toolPolicyQuery = queryPriorIntervention({
-    target_subsystem: "TOOL_POLICY",
-    proposal_class: "write APIs",
-  });
-  console.log("\nAEP-MEM-001 query — tool policy (prior BLOCKED):");
-  console.log(JSON.stringify(toolPolicyQuery, null, 2));
-  assert(
-    toolPolicyQuery.result === "PRIOR_FAILURE",
-    "Memory query must return PRIOR_FAILURE for blocked tool policy"
-  );
-  assert(
-    toolPolicyQuery.recommended_action === "DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE",
-    "Memory query must recommend DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE for blocked intervention"
-  );
-
-  // Query 2: Novel intervention — no prior history, simulation allowed.
-  const novelQuery = queryPriorIntervention({
-    target_subsystem: "PLANNER",
-    proposal_class: "reorder planning steps",
-  });
-  console.log("\nAEP-MEM-001 query — planner (novel):");
-  console.log(JSON.stringify(novelQuery, null, 2));
-  assert(
-    novelQuery.result === "NOVEL_INTERVENTION",
-    "Novel planner query must return NOVEL_INTERVENTION"
-  );
-  assert(
-    novelQuery.recommended_action === "PROCEED_TO_SIMULATION",
-    "Novel intervention must recommend PROCEED_TO_SIMULATION"
-  );
 
   console.log("\nAll assertions passed. AEP v0.1 proof slice complete.");
 }
