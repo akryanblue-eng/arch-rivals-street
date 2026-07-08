@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arch-rivals-street/engine/schemas/game_state.schema.json",
+  "title": "GameSnapshot",
+  "type": "object",
+  "required": ["frame", "attacker", "defender", "ball"],
+  "additionalProperties": false,
+  "definitions": {
+    "fixed_point": {
+      "type": "string",
+      "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+    },
+    "vec2": {
+      "type": "object",
+      "required": ["x", "y"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "$ref": "#/definitions/fixed_point" },
+        "y": { "$ref": "#/definitions/fixed_point" }
+      }
+    },
+    "kinematics": {
+      "type": "object",
+      "required": ["position", "velocity", "acceleration"],
+      "additionalProperties": false,
+      "properties": {
+        "position": { "$ref": "#/definitions/vec2" },
+        "velocity": { "$ref": "#/definitions/vec2" },
+        "acceleration": { "$ref": "#/definitions/vec2" }
+      }
+    },
+    "defender_mode": {
+      "enum": ["GUARDING", "SHADING_LEFT", "SHADING_RIGHT", "CONTESTING", "RECOVERING"]
+    },
+    "defender_belief": {
+      "type": "object",
+      "required": ["predicted_intercept", "threat_level", "mode"],
+      "additionalProperties": false,
+      "properties": {
+        "predicted_intercept": { "$ref": "#/definitions/vec2" },
+        "threat_level": { "$ref": "#/definitions/fixed_point" },
+        "mode": { "$ref": "#/definitions/defender_mode" }
+      }
+    },
+    "possession_state": {
+      "enum": ["ATTACKER", "BALL_IN_FLIGHT", "LOOSE_BALL"]
+    }
+  },
+  "properties": {
+    "frame": { "type": "integer", "minimum": 0 },
+    "attacker": {
+      "type": "object",
+      "required": ["kinematics"],
+      "additionalProperties": false,
+      "properties": {
+        "kinematics": { "$ref": "#/definitions/kinematics" }
+      }
+    },
+    "defender": {
+      "type": "object",
+      "required": ["kinematics", "belief"],
+      "additionalProperties": false,
+      "properties": {
+        "kinematics": { "$ref": "#/definitions/kinematics" },
+        "belief": { "$ref": "#/definitions/defender_belief" }
+      }
+    },
+    "ball": {
+      "type": "object",
+      "required": ["possession", "position", "velocity", "launch_angle", "spin"],
+      "additionalProperties": false,
+      "properties": {
+        "possession": { "$ref": "#/definitions/possession_state" },
+        "position": { "$ref": "#/definitions/vec2" },
+        "velocity": { "$ref": "#/definitions/vec2" },
+        "launch_angle": { "$ref": "#/definitions/fixed_point" },
+        "spin": { "$ref": "#/definitions/fixed_point" }
+      }
+    }
+  }
+}
