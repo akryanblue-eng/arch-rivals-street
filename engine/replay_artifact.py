@@ -1,17 +1,22 @@
-"""M4 Part 2 — Replay artifact writer: content-hashed filesystem bundle.
+"""M4 Part 2 / M5 — Replay artifact writers: content-hashed filesystem bundles.
 
-create_replay_artifact(evidence, artifact_root) writes an EvidenceRecord to:
+Two writers, two separate contracts:
 
-    artifacts/runs/<run_id>/
-        evidence.json      — full canonical evidence payload
-        manifest.json      — run_id, timestamp, sha256 of evidence.json
+create_replay_artifact(evidence, artifact_root)
+    Writes an EvidenceRecord to:
+        artifacts/runs/<run_id>/
+            evidence.json   — full canonical evidence payload
+            manifest.json   — run_id, timestamp, sha256 of evidence.json
 
-The SHA-256 digest in manifest.json is computed from evidence.json content
-after it is written, so the manifest always reflects the actual bytes on disk.
+write_replay_bundle(run_id, engine_version, timestamp, seed_snapshot, truth_track, artifact_root)
+    Writes the full verifier bundle to:
+        artifacts/runs/<run_id>/
+            seed_snapshot.json  — initial GameSnapshot (canonical to_dict format)
+            truth_track.json    — list of GameSnapshot dicts for the archived run
+            manifest.json       — engine_version, run_id, seed_sha256, truth_track_sha256
 
-Nothing is read from disk during artifact creation — the pipeline is
-write-only at this stage. Verification (re-reading and hashing) is the
-responsibility of engine/replay_verifier.py (M5).
+SHA-256 digests are computed from the bytes written to disk, not from
+in-memory dicts, so manifests are always faithful content addresses.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from engine.evidence_schema import EvidenceRecord
+from engine.game_state import GameSnapshot
 
 _ARTIFACT_ROOT = Path("artifacts/runs")
 
@@ -95,5 +101,103 @@ def create_replay_artifact(
     return ReplayArtifactPaths(
         run_dir=run_dir,
         evidence_path=evidence_path,
+        manifest_path=manifest_path,
+    )
+
+
+# ---------------------------------------------------------------------------
+# M5 — Verifier bundle writer
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReplayBundlePaths:
+    """Paths written by write_replay_bundle."""
+
+    run_dir: Path
+    seed_path: Path
+    truth_track_path: Path
+    manifest_path: Path
+
+
+def write_replay_bundle(
+    run_id: str,
+    engine_version: str,
+    timestamp: str,
+    seed_snapshot: GameSnapshot,
+    truth_track: list[GameSnapshot],
+    artifact_root: Path | None = None,
+) -> ReplayBundlePaths:
+    """Write a verifier bundle (seed + track + manifest) to disk.
+
+    The bundle is the authority for M5 replay verification:
+    - seed_snapshot.json is the deterministic start state
+    - truth_track.json is the full archived timeline (includes seed frame)
+    - manifest.json cryptographically binds both files
+
+    Parameters
+    ----------
+    run_id:
+        UUID string; becomes the sub-directory name under artifact_root.
+    engine_version:
+        Semantic version of the engine that produced this run. The verifier
+        refuses bundles whose stored version does not match its expectation.
+    timestamp:
+        ISO-8601 UTC string recorded at bundle creation time.
+    seed_snapshot:
+        Initial GameSnapshot (frame 0) from which the run was launched.
+    truth_track:
+        All snapshots in the archived run, starting with the seed frame.
+    artifact_root:
+        Parent directory; defaults to ``artifacts/runs``.
+
+    Raises
+    ------
+    FileExistsError
+        If the run directory already exists.
+    """
+    root = artifact_root if artifact_root is not None else _ARTIFACT_ROOT
+    run_dir = root / run_id
+
+    if run_dir.exists():
+        raise FileExistsError(
+            f"Artifact directory already exists for run_id {run_id!r}: {run_dir}"
+        )
+
+    run_dir.mkdir(parents=True, exist_ok=False)
+
+    # --- seed_snapshot.json ----------------------------------------------
+    seed_path = run_dir / "seed_snapshot.json"
+    seed_bytes = json.dumps(
+        seed_snapshot.to_dict(), sort_keys=True, indent=2
+    ).encode("utf-8")
+    seed_path.write_bytes(seed_bytes)
+    seed_sha256 = hashlib.sha256(seed_bytes).hexdigest()
+
+    # --- truth_track.json ------------------------------------------------
+    truth_track_path = run_dir / "truth_track.json"
+    truth_bytes = json.dumps(
+        [snap.to_dict() for snap in truth_track], sort_keys=True, indent=2
+    ).encode("utf-8")
+    truth_track_path.write_bytes(truth_bytes)
+    truth_track_sha256 = hashlib.sha256(truth_bytes).hexdigest()
+
+    # --- manifest.json ---------------------------------------------------
+    manifest_path = run_dir / "manifest.json"
+    manifest = {
+        "engine_version": engine_version,
+        "run_id": run_id,
+        "seed_sha256": seed_sha256,
+        "timestamp": timestamp,
+        "truth_track_sha256": truth_track_sha256,
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, indent=2), encoding="utf-8"
+    )
+
+    return ReplayBundlePaths(
+        run_dir=run_dir,
+        seed_path=seed_path,
+        truth_track_path=truth_track_path,
         manifest_path=manifest_path,
     )
