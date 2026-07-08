@@ -11,6 +11,22 @@ export type EvolvableComponent =
 
 export type AepOutcome = "PROMOTED" | "REJECTED" | "BLOCKED";
 
+// Scores represent error / failure rates: lower is better.
+// IMPROVED  — candidate score is lower than baseline (failure rate decreased)
+// REGRESSED — candidate score is higher than baseline (failure rate increased)
+// UNCHANGED — no measurable difference
+export type SimulationLabel = "IMPROVED" | "REGRESSED" | "UNCHANGED";
+
+// Rejection reason codes carried by REJECTED decisions.
+// LADDER_NOT_SATISFIED       — a smaller intervention has not yet been tried.
+// MODEL_CHANGE_NOT_JUSTIFIED — BASE_MODEL retrain proposed without evidence
+//                              that lower-level fixes were exhausted.
+// NO_IMPROVEMENT_OBSERVED    — simulation ran cleanly but showed no gain.
+export type RejectionReason =
+  | "LADDER_NOT_SATISFIED"
+  | "MODEL_CHANGE_NOT_JUSTIFIED"
+  | "NO_IMPROVEMENT_OBSERVED";
+
 export interface AepProposal {
   proposalId: string;
   component: EvolvableComponent;
@@ -18,10 +34,11 @@ export interface AepProposal {
   ledgerRef: string;
 }
 
+// Scores are error / failure rates (lower is better).
 export interface SimulationResult {
-  baselineBehaviourScore: number;
-  candidateBehaviourScore: number;
-  delta: number;
+  baselineErrorRate: number;
+  candidateErrorRate: number;
+  label: SimulationLabel;
   harmful: boolean;
 }
 
@@ -29,6 +46,7 @@ export interface AepDecision {
   proposal: AepProposal;
   outcome: AepOutcome;
   simulationResult?: SimulationResult;
+  rejectionReason?: RejectionReason;
   blockReason?: string;
 }
 
@@ -58,14 +76,27 @@ function requiredPriorRejections(
   return LADDER.slice(0, idx) as EvolvableComponent[];
 }
 
-function validateLadder(proposal: AepProposal): string | null {
+// Returns the rejection reason if the ladder constraint is not met, or null
+// if the proposal is eligible to proceed to simulation.
+function checkLadder(proposal: AepProposal): RejectionReason | null {
   const required = requiredPriorRejections(proposal.component);
   const missing = required.filter((c) => !rejectedComponents.has(c));
   if (missing.length === 0) return null;
-  return (
-    `Ladder violation: ${proposal.component} requires prior rejection of ` +
-    `[${missing.join(", ")}]`
-  );
+  // BASE_MODEL has a named reason; all others share the generic one.
+  return proposal.component === "BASE_MODEL"
+    ? "MODEL_CHANGE_NOT_JUSTIFIED"
+    : "LADDER_NOT_SATISFIED";
+}
+
+// Classify a simulation result. Scores are error rates; lower is better.
+function labelSimulation(
+  baseline: number,
+  candidate: number,
+  harmful: boolean
+): SimulationLabel {
+  if (harmful || candidate > baseline) return "REGRESSED";
+  if (candidate < baseline) return "IMPROVED";
+  return "UNCHANGED";
 }
 
 // Runs a deterministic counterfactual of the proposed change against the
@@ -74,45 +105,58 @@ function validateLadder(proposal: AepProposal): string | null {
 // injected runner so the proof slice can drive it directly.
 export function runSimulation(
   _proposal: AepProposal,
-  runner: () => SimulationResult
+  runner: () => { baselineErrorRate: number; candidateErrorRate: number; harmful: boolean }
 ): SimulationResult {
-  return runner();
+  const raw = runner();
+  return {
+    baselineErrorRate: raw.baselineErrorRate,
+    candidateErrorRate: raw.candidateErrorRate,
+    label: labelSimulation(raw.baselineErrorRate, raw.candidateErrorRate, raw.harmful),
+    harmful: raw.harmful,
+  };
 }
 
 export function propose(
   proposal: AepProposal,
-  simulationRunner: () => SimulationResult
+  simulationRunner: () => { baselineErrorRate: number; candidateErrorRate: number; harmful: boolean }
 ): AepDecision {
   // 1. Validate ladder precedence.
-  const violation = validateLadder(proposal);
-  if (violation !== null) {
+  // A ladder violation produces REJECTED (not BLOCKED) — the proposal was
+  // evaluated and intentionally declined because the required evidence of
+  // prior exhaustion is absent. This is a governance decision, not a safety
+  // failure.
+  const ladderViolation = checkLadder(proposal);
+  if (ladderViolation !== null) {
     return {
       proposal,
-      outcome: "BLOCKED",
-      blockReason: violation,
+      outcome: "REJECTED",
+      rejectionReason: ladderViolation,
     };
   }
 
   // 2. Run simulation.
   const sim = runSimulation(proposal, simulationRunner);
 
-  // 3. If the simulation detected a harmful outcome, block immediately.
-  if (sim.harmful) {
+  // 3. If the simulation detected a harmful outcome or a regression, block.
+  // BLOCKED = the safety gate fired before the improvement evaluation was
+  // reached. No deployment. Reason archived.
+  if (sim.harmful || sim.label === "REGRESSED") {
     return {
       proposal,
       outcome: "BLOCKED",
       simulationResult: sim,
-      blockReason: "Simulation detected harmful outcome.",
+      blockReason: "Simulation detected regression or harmful outcome.",
     };
   }
 
-  // 4. Evaluate: did the proposed change improve observed behaviour?
-  if (sim.delta <= 0) {
+  // 4. Evaluate: did the proposed change improve observed error rate?
+  if (sim.label !== "IMPROVED") {
     rejectedComponents.add(proposal.component);
     return {
       proposal,
       outcome: "REJECTED",
       simulationResult: sim,
+      rejectionReason: "NO_IMPROVEMENT_OBSERVED",
     };
   }
 
