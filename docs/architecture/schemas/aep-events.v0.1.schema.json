@@ -17,7 +17,9 @@
         "aep.simulation.started",
         "aep.simulation.blocked",
         "aep.proposal.rejected",
-        "aep.proposal.promoted"
+        "aep.proposal.promoted",
+        "aep.audit.tampered_deploy_attempt",
+        "aep.audit.simulation_enforced"
       ],
       "description": "The type of AEP lifecycle event."
     },
@@ -34,9 +36,11 @@
         "TOOL_POLICY",
         "PLANNER",
         "PROMPT",
-        "BASE_MODEL"
+        "BASE_MODEL",
+        "GOVERNANCE",
+        "UNKNOWN"
       ],
-      "description": "The EvolvableComponent ladder position targeted by this proposal."
+      "description": "The EvolvableComponent ladder position targeted by this proposal, or GOVERNANCE/UNKNOWN for audit events."
     },
     "proposalId": {
       "type": "string",
@@ -72,6 +76,15 @@
     "blockReason": {
       "type": "string",
       "description": "Human-readable reason for a BLOCKED outcome. Present only on aep.simulation.blocked."
+    },
+    "rejectionReason": {
+      "type": "string",
+      "enum": [
+        "LADDER_NOT_SATISFIED",
+        "MODEL_CHANGE_NOT_JUSTIFIED",
+        "NO_IMPROVEMENT_OBSERVED"
+      ],
+      "description": "Coded reason for a REJECTED outcome. Present only on aep.proposal.rejected."
     },
     "ladderViolation": {
       "type": "object",

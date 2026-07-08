@@ -33,9 +33,17 @@ import {
   SliceEvidenceRecord,
 } from "./evolution/evolutionReplayAudit";
 
+import {
+  appendEntry,
+  queryPriorIntervention,
+  dumpDecisionLedger,
+  resetDecisionLedger,
+} from "./evolution/AepDecisionLedger";
+
 function run(): void {
   resetSession();
   resetLedger();
+  resetDecisionLedger();
 
   const sliceOutcomes: SliceEvidenceRecord["outcomes"] = [];
 
@@ -86,6 +94,16 @@ function run(): void {
     after: retrievalDecision.simulationResult!.candidateErrorRate,
   });
 
+  appendEntry(
+    retrievalDecision,
+    "Retrieval precision drop causing downstream execution latency friction.",
+    {
+      failure_class: "RETRIEVAL_PRECISION_DEGRADATION",
+      affected_metric: "execution_latency",
+      origin_event_hash: retrievalProposal.ledgerRef,
+    }
+  );
+
   // ── Case 2: Base-model retrain ───────────────────────────────────────────
   //
   // Input Experience:  Same failure class as Case 1.
@@ -134,6 +152,16 @@ function run(): void {
     decision: "REJECTED",
     reason: "MODEL_CHANGE_NOT_JUSTIFIED",
   });
+
+  appendEntry(
+    baseModelDecision,
+    "Retrieval precision drop causing downstream execution latency friction.",
+    {
+      failure_class: "RETRIEVAL_PRECISION_DEGRADATION",
+      affected_metric: "execution_latency",
+      origin_event_hash: baseModelProposal.ledgerRef,
+    }
+  );
 
   // ── Case 3: Tool-policy change ───────────────────────────────────────────
   //
@@ -189,6 +217,16 @@ function run(): void {
     after: toolPolicyDecision.simulationResult!.candidateErrorRate,
   });
 
+  appendEntry(
+    toolPolicyDecision,
+    "Edge-case physics exceptions tracking drift during rapid movement updates.",
+    {
+      failure_class: "TOOL_POLICY_SAFETY_REGRESSION",
+      affected_metric: "error_rate",
+      origin_event_hash: toolPolicyProposal.ledgerRef,
+    }
+  );
+
   // ── Adversarial audit: tampered-ledger direct-deploy attempt ────────────
   //
   // An actor attempts to deploy a change by calling deploy logic directly,
@@ -215,6 +253,54 @@ function run(): void {
   console.log(`\nRIG ledger entries recorded: ${events.length}`);
   console.log("\nSlice E evidence record:");
   console.log(JSON.stringify(evidence, null, 2));
+
+  // ── AEP Decision Ledger ───────────────────────────────────────────────────
+  //
+  // The decision ledger is the evolutionary memory layer. Each entry records
+  // the full governance trace: what changed, why it was proposed, whether it
+  // was simulated, what was measured, and what the verdict was.
+  const decisionLedgerEntries = dumpDecisionLedger();
+  console.log(`\nAEP Decision Ledger entries: ${decisionLedgerEntries.length}`);
+  console.log(JSON.stringify(decisionLedgerEntries, null, 2));
+
+  // ── AEP-MEM-001: Memory query contract ───────────────────────────────────
+  //
+  // Before re-attempting an intervention, the evolution loop queries the ledger
+  // to avoid repeating known failures. If a prior verdict was BLOCKED or
+  // REJECTED the query returns DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE.
+
+  // Query 1: Known blocked intervention — should not be retried.
+  const toolPolicyQuery = queryPriorIntervention({
+    target_subsystem: "TOOL_POLICY",
+    proposal_class: "write APIs",
+  });
+  console.log("\nAEP-MEM-001 query — tool policy (prior BLOCKED):");
+  console.log(JSON.stringify(toolPolicyQuery, null, 2));
+  assert(
+    toolPolicyQuery.result === "PRIOR_FAILURE",
+    "Memory query must return PRIOR_FAILURE for blocked tool policy"
+  );
+  assert(
+    toolPolicyQuery.recommended_action === "DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE",
+    "Memory query must recommend DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE for blocked intervention"
+  );
+
+  // Query 2: Novel intervention — no prior history, simulation allowed.
+  const novelQuery = queryPriorIntervention({
+    target_subsystem: "PLANNER",
+    proposal_class: "reorder planning steps",
+  });
+  console.log("\nAEP-MEM-001 query — planner (novel):");
+  console.log(JSON.stringify(novelQuery, null, 2));
+  assert(
+    novelQuery.result === "NOVEL_INTERVENTION",
+    "Novel planner query must return NOVEL_INTERVENTION"
+  );
+  assert(
+    novelQuery.recommended_action === "PROCEED_TO_SIMULATION",
+    "Novel intervention must recommend PROCEED_TO_SIMULATION"
+  );
+
   console.log("\nAll assertions passed. AEP v0.1 proof slice complete.");
 }
 

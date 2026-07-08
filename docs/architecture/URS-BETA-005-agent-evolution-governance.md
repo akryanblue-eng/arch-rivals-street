@@ -288,3 +288,105 @@ URS-BETA-005  Agent Evolution Governance (AEP v0.1)  ← this document
 ```
 
 All commits listed are reachable from this repository. No external lineage is claimed.
+
+---
+
+## AEP Decision Ledger (Evolutionary Memory Layer)
+
+### Purpose
+
+The AEP Decision Ledger is the durable evolutionary memory layer for the governance
+system. Without it, a self-improving system risks cyclic optimization traps: repeating
+historical regressions or re-proposing previously rejected architectural interventions.
+
+The ledger transforms isolated governance verdicts into a searchable, chronological
+repository of structural causality. It answers:
+
+> What structural changes have already been attempted, under what conditions, and what happened?
+
+### Schema
+
+All ledger entries conform to the schema in:
+
+```
+docs/architecture/schemas/aep-decision-ledger.v0.1.schema.json
+```
+
+Each entry captures the complete governance trace:
+
+| Field | Content |
+|---|---|
+| `entry_id` | SHA-256 content-addressed identifier (deterministic, deduplication-safe) |
+| `target_subsystem` | EvolvableComponent ladder position |
+| `proposal` | Observed failure, proposed intervention, justification level |
+| `governance_evaluation` | Verdict (PROMOTED/REJECTED/BLOCKED), reason code, simulation metrics |
+| `audit_trail` | Simulation verified flag, tamper detection flag, execution hash |
+| `causal_signature` | Optional: failure class, affected metric, origin event hash |
+
+### Justification Levels
+
+The ledger maps each EvolvableComponent to an intervention ladder classification:
+
+| Level | Components | Meaning |
+|---|---|---|
+| `L1_CONFIG` | RETRIEVAL, MEMORY_POLICY | Configuration-level change |
+| `L2_POLICY` | TOOL_POLICY | Policy-level change |
+| `L3_ARCHITECTURE` | PLANNER, PROMPT | Architectural change |
+| `L4_CORE_MODEL` | BASE_MODEL | Core model change |
+
+### AEP-MEM-001: Memory Query Contract
+
+Before attempting an intervention, the evolution loop queries the decision ledger:
+
+```
+queryPriorIntervention({
+    target_subsystem: "TOOL_POLICY",
+    proposal_class: "write APIs"
+})
+```
+
+Returns:
+
+```json
+{
+  "historical_match": true,
+  "previous_verdict": "BLOCKED",
+  "previous_metrics": { "baseline": "0.600000", "result": "0.800000" },
+  "recommended_action": "DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE",
+  "result": "PRIOR_FAILURE"
+}
+```
+
+Optimization constraint: if `result` is `PRIOR_FAILURE` or `PRIOR_REJECTION`,
+the evolution loop should not retry the intervention without new evidence. This
+prevents the system from repeating known failures.
+
+Novel interventions (no historical match) return `PROCEED_TO_SIMULATION`.
+
+### Ladder Semantics (Updated)
+
+The escalation ladder is scoped per failure context (ledgerRef) and uses a
+"first attempt" rule:
+
+- **First proposal for a failure context**: allowed to proceed directly to
+  simulation, regardless of ladder level. This enables proposing a TOOL_POLICY
+  fix for a tool failure without first exhausting RETRIEVAL fixes that are
+  irrelevant to the observed failure class.
+- **Subsequent proposals for the same failure context**: all lower-level components
+  must have been simulated before a higher-level component may be proposed.
+
+This prevents unnecessary escalation within a failure context while still
+allowing the first intervention to target the most appropriate level.
+
+### Implementation
+
+See `src/evolution/AepDecisionLedger.ts`.
+
+Key functions:
+
+| Function | Responsibility |
+|---|---|
+| `appendEntry(decision, observedFailure, causalSignature?)` | Write a governance decision to the ledger |
+| `queryPriorIntervention(request)` | AEP-MEM-001: query prior interventions before re-attempting |
+| `dumpDecisionLedger()` | Return frozen copy of all ledger entries |
+| `resetDecisionLedger()` | Reset for isolated test runs |

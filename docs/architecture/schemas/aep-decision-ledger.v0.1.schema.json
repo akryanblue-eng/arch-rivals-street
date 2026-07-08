@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aep-decision-ledger.v0.1.schema.json",
+  "title": "AEPDecisionLedgerEntry",
+  "description": "Normalized governance record for every AEP evolution attempt. Provides durable evolutionary memory to prevent cyclic optimization and enable deterministic ledger lookup before re-attempting interventions.",
+  "type": "object",
+  "required": [
+    "entry_id",
+    "timestamp_utc",
+    "target_subsystem",
+    "proposal",
+    "governance_evaluation",
+    "audit_trail"
+  ],
+  "properties": {
+    "entry_id": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "Content-addressed identifier derived from target_subsystem, observed_failure, proposed_intervention, verdict, and simulation metrics. Two proposals with identical inputs produce the same ID, making duplicates detectable and historical lookup deterministic."
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp at which the entry was recorded."
+    },
+    "target_subsystem": {
+      "type": "string",
+      "enum": [
+        "RETRIEVAL",
+        "MEMORY_POLICY",
+        "TOOL_POLICY",
+        "PLANNER",
+        "PROMPT",
+        "BASE_MODEL"
+      ],
+      "description": "EvolvableComponent ladder position targeted by this proposal."
+    },
+    "proposal": {
+      "type": "object",
+      "required": ["observed_failure", "proposed_intervention", "justification_level"],
+      "properties": {
+        "observed_failure": {
+          "type": "string",
+          "description": "Description of the failure that motivated this proposal."
+        },
+        "proposed_intervention": {
+          "type": "string",
+          "description": "Description of the proposed change."
+        },
+        "justification_level": {
+          "type": "string",
+          "enum": ["L1_CONFIG", "L2_POLICY", "L3_ARCHITECTURE", "L4_CORE_MODEL"],
+          "description": "Intervention ladder classification derived from the target component. L1_CONFIG = smallest change (RETRIEVAL, MEMORY_POLICY); L4_CORE_MODEL = largest change (BASE_MODEL)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "governance_evaluation": {
+      "type": "object",
+      "required": ["verdict", "reason_code"],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["PROMOTED", "REJECTED", "BLOCKED"],
+          "description": "Governance outcome: PROMOTED = improved and deployed; REJECTED = governance declined (no simulation needed or no improvement observed); BLOCKED = simulation ran and failed safety/performance gate."
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "CONTROLLED_BEHAVIOR_IMPROVEMENT",
+            "MODEL_CHANGE_NOT_JUSTIFIED",
+            "LADDER_NOT_SATISFIED",
+            "NO_IMPROVEMENT_OBSERVED",
+            "SIMULATION_PERFORMANCE_REGRESSION",
+            "SIMULATION_SAFETY_VIOLATION"
+          ],
+          "description": "Specific reason for the verdict."
+        },
+        "simulation_metrics": {
+          "type": "object",
+          "description": "Present when simulation ran (PROMOTED and BLOCKED verdicts). Absent for REJECTED verdicts where the ladder check fired before simulation.",
+          "required": ["baseline_error_rate", "simulated_error_rate"],
+          "properties": {
+            "baseline_error_rate": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]{6}$",
+              "description": "Error rate of the unmodified system on the replay window. Lower is better."
+            },
+            "simulated_error_rate": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]{6}$",
+              "description": "Error rate of the proposed change on the same replay window. Lower is better."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "audit_trail": {
+      "type": "object",
+      "required": ["simulation_verified", "tampered_deploy_attempt_detected"],
+      "properties": {
+        "simulation_verified": {
+          "type": "boolean",
+          "description": "True when the proposal passed through AEP simulation before governance evaluation."
+        },
+        "tampered_deploy_attempt_detected": {
+          "type": "boolean",
+          "description": "True when an out-of-band deploy attempt was detected during this governance cycle."
+        },
+        "execution_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of the simulation execution context (component, change, ledgerRef, error rates, label, outcome). Enables replay verification."
+        }
+      },
+      "additionalProperties": false
+    },
+    "causal_signature": {
+      "type": "object",
+      "description": "Optional causal context enabling clustering of related failures. The same intervention may appear under different surface symptoms (e.g. slow retrieval and tool timeout both caused by index degradation). A causal signature allows deduplication and cross-failure analysis.",
+      "required": ["failure_class", "affected_metric"],
+      "properties": {
+        "failure_class": {
+          "type": "string",
+          "description": "Classification of the originating failure (e.g. RETRIEVAL_PRECISION_DEGRADATION)."
+        },
+        "affected_metric": {
+          "type": "string",
+          "description": "The measured metric that was degraded (e.g. execution_latency)."
+        },
+        "origin_event_hash": {
+          "type": "string",
+          "description": "Hash of the originating RIG ledger event."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
