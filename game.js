@@ -6,10 +6,10 @@ const HOOP_RIGHT = { x: 820, y: 300 };
 
 const state = {
   players: [
-    { id: "A1", x: 200, y: 300, vx: 0, vy: 0, team: "A" },
-    { id: "A2", x: 250, y: 350, vx: 0, vy: 0, team: "A" },
-    { id: "B1", x: 700, y: 300, vx: 0, vy: 0, team: "B" },
-    { id: "B2", x: 650, y: 350, vx: 0, vy: 0, team: "B" }
+    { id: "A1", x: 200, y: 300, vx: 0, vy: 0, team: "A", pressure: 0 },
+    { id: "A2", x: 250, y: 350, vx: 0, vy: 0, team: "A", pressure: 0 },
+    { id: "B1", x: 700, y: 300, vx: 0, vy: 0, team: "B", pressure: 0 },
+    { id: "B2", x: 650, y: 350, vx: 0, vy: 0, team: "B", pressure: 0 }
   ],
   ball: { x: 300, y: 300, vx: 0, vy: 0, owner: null, shotClock: 0, inAir: false },
   score: { A: 0, B: 0 },
@@ -31,18 +31,6 @@ function tryGainPossession(player) {
   const dist = Math.sqrt(dx * dx + dy * dy);
   if (dist < 15) {
     state.ball.owner = player.id;
-  }
-}
-
-function trySteal(defender, target) {
-  if (state.ball.owner !== target.id) return;
-  const dx = defender.x - target.x;
-  const dy = defender.y - target.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist < 18 && Math.random() < 0.08) {
-    state.ball.owner = null;
-    state.ball.vx = (Math.random() - 0.5) * 4;
-    state.ball.vy = (Math.random() - 0.5) * 4;
   }
 }
 
@@ -147,8 +135,58 @@ const AI_STATE = {
 };
 
 const AI_SPEED = 1.6;
-const GUARD_STANDOFF = 12; // must stay below trySteal's proximity check (18) or defenders stall just outside steal range
+const GUARD_STANDOFF = 20; // stop just outside steal range, close enough for pressure to build
 const AUTO_SHOOT_RANGE = 120;
+
+// Deterministic steal model: pressure accumulates while guarding instead of
+// rolling a random chance each frame, so identical input replays always
+// produce identical steal timing.
+const PRESSURE_RADIUS = 60; // beyond this, a defender builds no pressure at all
+const BASE_PRESSURE = 1;
+const STEAL_THRESHOLD = 45; // accumulated pressure required to force a turnover
+const DEBUG_STEALS = false; // flip on to audit pressure/threshold at each turnover
+
+function calculateDefenderPressure(defender, carrier) {
+  const dx = carrier.x - defender.x;
+  const dy = carrier.y - defender.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > PRESSURE_RADIUS) return 0;
+
+  const proximity = (PRESSURE_RADIUS - dist) / PRESSURE_RADIUS; // 0..1, closer is higher
+
+  // Lane-denial bonus: is the defender sitting between the carrier and the
+  // hoop the carrier is attacking? Pure function of current positions, so it
+  // stays frame-reproducible without needing a stored velocity history.
+  const hoop = attackHoopFor(carrier.team);
+  const hx = hoop.x - carrier.x;
+  const hy = hoop.y - carrier.y;
+  const hoopDist = Math.sqrt(hx * hx + hy * hy) || 1;
+  const laneAlignment = (hx * dx + hy * dy) / (hoopDist * (dist || 1)); // -1..1
+  const laneBonus = Math.max(0, laneAlignment); // 0..1, only reward blocking the lane
+
+  return BASE_PRESSURE * proximity * (0.5 + 0.5 * laneBonus);
+}
+
+function updateAccumulatedPressure(defender, carrier) {
+  defender.pressure += calculateDefenderPressure(defender, carrier);
+}
+
+function evaluateStealState(defender, carrier) {
+  if (defender.pressure < STEAL_THRESHOLD) return;
+  if (DEBUG_STEALS) {
+    console.debug(
+      `[steal] ${defender.id} (${defender.aiState}) took the ball from ${carrier.id}: ` +
+      `pressure=${defender.pressure.toFixed(2)} threshold=${STEAL_THRESHOLD}`
+    );
+  }
+  const dx = carrier.x - defender.x;
+  const dy = carrier.y - defender.y;
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+  state.ball.owner = null;
+  state.ball.vx = (dx / dist) * 3;
+  state.ball.vy = (dy / dist) * 3;
+  defender.pressure = 0;
+}
 
 function decideAiState(player) {
   const owner = state.ball.owner;
@@ -173,6 +211,12 @@ function attackHoopFor(team) {
 function runDefenderAI(player) {
   player.aiState = decideAiState(player);
 
+  // Pressure is scoped to an active guard: leaving GUARD_CARRIER for any
+  // reason (ball turned over, teammate got it, ball went loose) clears it.
+  if (player.aiState !== AI_STATE.GUARD_CARRIER) {
+    player.pressure = 0;
+  }
+
   switch (player.aiState) {
     case AI_STATE.CHASE_BALL:
       moveToward(player, state.ball.x, state.ball.y);
@@ -180,7 +224,8 @@ function runDefenderAI(player) {
     case AI_STATE.GUARD_CARRIER: {
       const carrier = state.players.find(pl => pl.id === state.ball.owner);
       moveToward(player, carrier.x, carrier.y, GUARD_STANDOFF);
-      trySteal(player, carrier);
+      updateAccumulatedPressure(player, carrier);
+      evaluateStealState(player, carrier);
       break;
     }
     case AI_STATE.ADVANCE_TO_HOOP: {
