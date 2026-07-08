@@ -11,8 +11,14 @@ const state = {
     { id: "B1", x: 700, y: 300, vx: 0, vy: 0, team: "B" },
     { id: "B2", x: 650, y: 350, vx: 0, vy: 0, team: "B" }
   ],
-  ball: { x: 300, y: 300, vx: 0, vy: 0, owner: null, shotClock: 0, inAir: false }
+  ball: { x: 300, y: 300, vx: 0, vy: 0, owner: null, shotClock: 0, inAir: false },
+  score: { A: 0, B: 0 },
+  gameOver: false,
+  winner: null
 };
+
+const POINTS_PER_BASKET = 2;
+const WIN_SCORE = 11;
 
 const keys = {};
 window.addEventListener("keydown", e => keys[e.key] = true);
@@ -92,6 +98,40 @@ function checkRebound() {
   }
 }
 
+function attackingTeamForHoop(hoop) {
+  return hoop === HOOP_RIGHT ? "A" : "B";
+}
+
+function resetAfterScore() {
+  const ball = state.ball;
+  ball.owner = null;
+  ball.inAir = false;
+  ball.vx = 0;
+  ball.vy = 0;
+  ball.x = 450;
+  ball.y = 300;
+}
+
+function checkScore() {
+  if (state.gameOver) return;
+  const ball = state.ball;
+  if (!ball.inAir) return;
+  for (const hoop of [HOOP_LEFT, HOOP_RIGHT]) {
+    const dx = ball.x - hoop.x;
+    const dy = ball.y - hoop.y;
+    if (Math.sqrt(dx * dx + dy * dy) < 14) {
+      const team = attackingTeamForHoop(hoop);
+      state.score[team] += POINTS_PER_BASKET;
+      if (state.score[team] >= WIN_SCORE) {
+        state.gameOver = true;
+        state.winner = team;
+      }
+      resetAfterScore();
+      return;
+    }
+  }
+}
+
 function clampToCourt(p) {
   p.x = Math.max(60, Math.min(840, p.x));
   p.y = Math.max(60, Math.min(540, p.y));
@@ -107,7 +147,7 @@ const AI_STATE = {
 };
 
 const AI_SPEED = 1.6;
-const GUARD_STANDOFF = 20; // stop just outside steal range so trySteal has room to roll
+const GUARD_STANDOFF = 12; // must stay below trySteal's proximity check (18) or defenders stall just outside steal range
 const AUTO_SHOOT_RANGE = 120;
 
 function decideAiState(player) {
@@ -179,6 +219,7 @@ function update() {
   }
 
   updateBall();
+  checkScore();
   checkRebound();
 }
 
@@ -209,10 +250,25 @@ function render() {
   ctx.arc(state.ball.x, state.ball.y, 5, 0, Math.PI * 2);
   ctx.fillStyle = "orange";
   ctx.fill();
+
+  ctx.fillStyle = "white";
+  ctx.font = "24px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(`${state.score.A} - ${state.score.B}`, canvas.width / 2, 35);
+
+  if (state.gameOver) {
+    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "gold";
+    ctx.font = "48px sans-serif";
+    ctx.fillText(`TEAM ${state.winner} WINS`, canvas.width / 2, canvas.height / 2);
+  }
 }
 
 function loop() {
-  update();
+  if (!state.gameOver) {
+    update();
+  }
   render();
   requestAnimationFrame(loop);
 }
