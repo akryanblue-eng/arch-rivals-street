@@ -310,6 +310,61 @@ RETIRED       — administratively removed from all future consideration.
                 Terminal.
 ```
 
+### Lifecycle Catalyst
+
+Each non-ACTIVE state transition is tagged with a `lifecycle_catalyst` that
+records **what class of event drove it**. Two catalyst types are defined:
+
+**EMPIRICAL** — driven by runtime evidence: arbitration results, simulator
+validation, or environmental telemetry. The system detected a constraint that
+changed the principle's operational status.
+
+- `SUBORDINATED` via `resolveConflict()`: the arbitration engine detected a
+  pairwise conflict at runtime and dynamically muted the lower-priority principle.
+- `SUPERSEDED` via `supersedePrinciple()`: a newer, algorithmically validated
+  principle has claimed full logical replacement.
+
+**ADMINISTRATIVE** — driven by deliberate maintainer policy: compatibility scope
+adjustments, security-driven purges, or explicit policy decisions.
+
+- `DEPRECATED` via `deprecatePrinciple()`: a maintainer has intentionally frozen
+  the principle for legacy replay scope only.
+- `RETIRED` via `retirePrinciple()`: a maintainer has formally removed the
+  principle through administrative review.
+
+This separation ensures a compliance audit or meta-learning engine can
+immediately distinguish system-driven self-optimization from human-directed
+policy changes without inferring one from the other.
+
+```
+                    ┌──────────────────────────────┐
+                    │          CANDIDATE           │
+                    └──────────────┬───────────────┘
+                                   │ registerPrinciple()
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │            ACTIVE            │
+                    └──────┬────────────────┬──────┘
+                           │                │
+             ┌─────────────┘                └─────────────┐
+             ▼ EMPIRICAL catalyst                         ▼ ADMINISTRATIVE catalyst
+   ┌───────────────────┐                        ┌───────────────────┐
+   │   SUBORDINATED    │                        │    DEPRECATED     │
+   │ resolveConflict() │◄──reactivatePrinciple()│ deprecatePrinciple│
+   └─────────┬─────────┘                        └─────────┬─────────┘
+             │                                            │
+             │ supersedePrinciple()                       │ retirePrinciple()
+             ▼ EMPIRICAL catalyst                         ▼ ADMINISTRATIVE catalyst
+   ┌───────────────────┐                        ┌───────────────────┐
+   │    SUPERSEDED     │                        │      RETIRED      │
+   │    (terminal)     │                        │    (terminal)     │
+   └───────────────────┘                        └───────────────────┘
+```
+
+`lifecycle_catalyst` is absent on ACTIVE principles. It is cleared when a
+SUBORDINATED principle returns to ACTIVE via `reactivatePrinciple()`. It is
+preserved permanently for all terminal states as an immutable audit annotation.
+
 ### Transitions
 
 ```
@@ -338,6 +393,7 @@ Key properties:
 - `reactivatePrinciple()` only operates on `SUBORDINATED` entries. It returns
   `undefined` for any other state, preventing accidental revival of
   permanently retired principles.
+- `reactivatePrinciple()` clears `lifecycle_catalyst`: ACTIVE has no catalyst.
 - `DEPRECATED` principles do not contribute to the aggregate envelope check.
   Only `ACTIVE` principles count toward `MAX_AGGREGATE_TOLERANCE`.
 
@@ -348,35 +404,46 @@ conflict types. The `applied_disposition` field in `PrincipleResolutionRecord`
 keeps this explicit so that future conflict types can map to different
 dispositions without ambiguity:
 
-| Conflict type | Default disposition |
-|---|---|
-| `TAXONOMY_OVERRIDE` | `SUBORDINATED` |
-| `SPECIFICITY_COLLISION` | `SUBORDINATED` |
+| Conflict type | Default disposition | Catalyst |
+|---|---|---|
+| `TAXONOMY_OVERRIDE` | `SUBORDINATED` | `EMPIRICAL` |
+| `SPECIFICITY_COLLISION` | `SUBORDINATED` | `EMPIRICAL` |
 
 Explicit lifecycle management functions produce the remaining dispositions:
 
-| Function | Disposition applied |
-|---|---|
-| `supersedePrinciple()` | `SUPERSEDED` |
-| `deprecatePrinciple()` | `DEPRECATED` |
-| `retirePrinciple()` | `RETIRED` |
+| Function | Disposition applied | Catalyst |
+|---|---|---|
+| `supersedePrinciple()` | `SUPERSEDED` | `EMPIRICAL` |
+| `deprecatePrinciple()` | `DEPRECATED` | `ADMINISTRATIVE` |
+| `retirePrinciple()` | `RETIRED` | `ADMINISTRATIVE` |
 
 ### Principle Lineage
 
-When a principle is superseded, the `superseded_by` field on the displaced
-entry records the `principle_id` of its replacement. This enables a directed
-lineage graph over generations of related principles:
+When a principle is superseded, two lineage edges are recorded simultaneously:
+
+**Forward edge** (`superseded_by` on the old principle): records the
+`principle_id` of the replacement. Enables forward traversal from ancestor to
+successor.
+
+**Backward edge** (`supersedes` on the new principle): records the
+`principle_id` of the predecessor. Enables backward traversal from successor to
+ancestor.
+
+Together they form a doubly-linked replacement chain across principle generations:
 
 ```
 Old Principle (SUPERSEDED)
-      │
-      │ superseded_by
-      ▼
-New Principle (ACTIVE)
+      │                 ▲
+      │ superseded_by   │ supersedes
+      ▼                 │
+New Principle (ACTIVE) ─┘
 ```
 
-An audit or meta-learning agent can reconstruct the full replacement chain by
-following `superseded_by` links forward from any historical entry.
+An audit or meta-learning agent can reconstruct the full replacement chain in
+either direction by following these edges. If an unexpected regression surfaces
+in a complex calculation, an engineer can step backward through `supersedes`
+links to pinpoint exactly which ancestor principle introduced the vulnerable
+premise — without needing to search the full registry.
 
 ---
 
@@ -423,13 +490,13 @@ Full proof is produced by Case 7 in `src/runSliceE.ts`.
 
 | Case | Mechanism | Key assertion |
 |---|---|---|
-| 7a: Taxonomy override | `TAXONOMY_OVERRIDE` conflict | INTEGRITY_SHIELD (LEVEL_0) wins; PATHFINDING_HEURISTIC becomes `SUBORDINATED` |
-| 7b: Specificity collision | `SPECIFICITY_COLLISION` conflict | NARROW_REPLAY_POLICY wins; BROAD_MOVEMENT becomes `SUBORDINATED` |
+| 7a: Taxonomy override | `TAXONOMY_OVERRIDE` conflict | INTEGRITY_SHIELD (LEVEL_0) wins; PATHFINDING_HEURISTIC becomes `SUBORDINATED` with `EMPIRICAL` catalyst |
+| 7b: Specificity collision | `SPECIFICITY_COLLISION` conflict | NARROW_REPLAY_POLICY wins; BROAD_MOVEMENT becomes `SUBORDINATED` with `EMPIRICAL` catalyst |
 | 7c: Aggregation guard | `aggregateEnvelopeCheck()` | 0.007 active + 0.004 proposed = 0.011 > 0.01 → `ENVELOPE_EXCEEDED` |
-| 7d-1: Reactivation | `reactivatePrinciple()` | SUBORDINATED principle returns to ACTIVE; ACTIVE/SUPERSEDED/RETIRED reject the call |
-| 7d-2: Supersession | `supersedePrinciple()` | Principle becomes SUPERSEDED; `superseded_by` records the replacement for lineage tracing |
-| 7d-3: Deprecation | `deprecatePrinciple()` | DEPRECATED principle no longer counted by `aggregateEnvelopeCheck()` |
-| 7d-4: Retirement | `retirePrinciple()` | Principle becomes RETIRED; `reactivatePrinciple()` returns undefined (terminal state) |
+| 7d-1: Reactivation | `reactivatePrinciple()` | SUBORDINATED principle returns to ACTIVE; `lifecycle_catalyst` cleared; ACTIVE/SUPERSEDED/RETIRED reject the call |
+| 7d-2: Supersession | `supersedePrinciple()` | Principle becomes SUPERSEDED with `EMPIRICAL` catalyst; `superseded_by` records forward lineage; `supersedes` records backward lineage on the new principle |
+| 7d-3: Deprecation | `deprecatePrinciple()` | DEPRECATED principle has `ADMINISTRATIVE` catalyst; no longer counted by `aggregateEnvelopeCheck()` |
+| 7d-4: Retirement | `retirePrinciple()` | Principle becomes RETIRED with `ADMINISTRATIVE` catalyst; `reactivatePrinciple()` returns undefined (terminal state) |
 
 ---
 

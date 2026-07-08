@@ -665,6 +665,10 @@ function run(): void {
     "Case 7a: losing principle must be SUBORDINATED (dynamically muted, not permanently retired)"
   );
   assert(
+    pathfindingHeuristic.lifecycle_catalyst === "EMPIRICAL",
+    "Case 7a: arbitration-driven SUBORDINATED transition must record EMPIRICAL catalyst"
+  );
+  assert(
     integrityShield.lifecycle_state === "ACTIVE",
     "Case 7a: winning principle must remain ACTIVE"
   );
@@ -732,6 +736,10 @@ function run(): void {
   assert(
     broadMovementPolicy.lifecycle_state === "SUBORDINATED",
     "Case 7b: losing principle must be SUBORDINATED"
+  );
+  assert(
+    broadMovementPolicy.lifecycle_catalyst === "EMPIRICAL",
+    "Case 7b: arbitration-driven SUBORDINATED transition must record EMPIRICAL catalyst"
   );
   assert(
     narrowReplayPolicy.lifecycle_state === "ACTIVE",
@@ -856,6 +864,10 @@ function run(): void {
     pathfindingHeuristic.lifecycle_state === "ACTIVE",
     "Case 7d-1: reactivated principle must return to ACTIVE"
   );
+  assert(
+    pathfindingHeuristic.lifecycle_catalyst === undefined,
+    "Case 7d-1: reactivation must clear lifecycle_catalyst (ACTIVE has no catalyst)"
+  );
 
   // Reactivating an already-ACTIVE principle is a no-op.
   const reactivateActiveNoOp = reactivatePrinciple(integrityShield.principle_id);
@@ -902,6 +914,14 @@ function run(): void {
     broadMovementPolicy.superseded_by === improvedMovementPolicy.principle_id,
     "Case 7d-2: superseded_by must reference the replacing principle for lineage tracing"
   );
+  assert(
+    broadMovementPolicy.lifecycle_catalyst === "EMPIRICAL",
+    "Case 7d-2: supersedePrinciple must record EMPIRICAL catalyst (algorithmic replacement)"
+  );
+  assert(
+    improvedMovementPolicy.supersedes === broadMovementPolicy.principle_id,
+    "Case 7d-2: supersedes must reference the replaced principle for backward lineage traversal"
+  );
 
   // A SUPERSEDED principle cannot be reactivated.
   const reactivateSupersededNoOp = reactivatePrinciple(broadMovementPolicy.principle_id);
@@ -932,6 +952,10 @@ function run(): void {
   assert(
     tolerancePrincipleA.lifecycle_state === "DEPRECATED",
     "Case 7d-3: deprecated principle must have lifecycle_state DEPRECATED"
+  );
+  assert(
+    tolerancePrincipleA.lifecycle_catalyst === "ADMINISTRATIVE",
+    "Case 7d-3: deprecatePrinciple must record ADMINISTRATIVE catalyst (maintainer policy action)"
   );
 
   // A DEPRECATED principle no longer contributes to the aggregate envelope.
@@ -968,6 +992,10 @@ function run(): void {
   assert(
     narrowReplayPolicy.lifecycle_state === "RETIRED",
     "Case 7d-4: retired principle must have lifecycle_state RETIRED"
+  );
+  assert(
+    narrowReplayPolicy.lifecycle_catalyst === "ADMINISTRATIVE",
+    "Case 7d-4: retirePrinciple must record ADMINISTRATIVE catalyst (maintainer review action)"
   );
 
   // A RETIRED principle cannot be reactivated.

@@ -54,7 +54,19 @@
     },
     "superseded_by": {
       "type": "string",
-      "description": "Optional principle_id of the principle that superseded this one. Only set when lifecycle_state is SUPERSEDED. Provides lineage tracing between generations of related principles."
+      "description": "Optional principle_id of the principle that superseded this one. Only set when lifecycle_state is SUPERSEDED. Forward lineage edge: enables traversal from ancestor to successor through the replacement chain."
+    },
+    "supersedes": {
+      "type": "string",
+      "description": "Optional principle_id of the principle that this principle directly superseded. Set on the newer (replacing) principle when supersedePrinciple() is called with a supersedingPrincipleId. Backward lineage edge: enables traversal from successor back to ancestor, complementing the superseded_by forward pointer. Together they form a doubly-linked replacement chain across principle generations."
+    },
+    "lifecycle_catalyst": {
+      "type": "string",
+      "enum": [
+        "EMPIRICAL",
+        "ADMINISTRATIVE"
+      ],
+      "description": "Catalyst that drove the most recent lifecycle state transition out of ACTIVE. EMPIRICAL: triggered by runtime arbitration or simulation evidence (SUBORDINATED from resolveConflict; SUPERSEDED from supersedePrinciple). ADMINISTRATIVE: triggered by deliberate maintainer policy action (DEPRECATED from deprecatePrinciple; RETIRED from retirePrinciple). Absent when lifecycle_state is ACTIVE. Cleared when a SUBORDINATED principle is reactivated. Preserved permanently for terminal states."
     }
   },
   "additionalProperties": false

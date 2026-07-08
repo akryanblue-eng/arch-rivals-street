@@ -37,6 +37,37 @@
 //   RETIRED      — formally purged via administrative review. Isolated from
 //                  all future consideration.
 //
+// Lifecycle catalyst:
+//
+//   Each non-ACTIVE state transition is tagged with the catalyst that drove it:
+//
+//   EMPIRICAL     — driven by runtime evidence: arbitration, simulation
+//                   verification, or environmental telemetry. Covers
+//                   SUBORDINATED (conflict arbitration) and SUPERSEDED
+//                   (algorithmic replacement).
+//
+//   ADMINISTRATIVE — driven by deliberate maintainer policy: compatibility
+//                    scope changes, security-driven purges, or explicit
+//                    policy decisions. Covers DEPRECATED (legacy freeze) and
+//                    RETIRED (administrative removal).
+//
+//   This separation ensures that a compliance audit or meta-learning engine
+//   can instantly distinguish system-driven self-optimization from
+//   human-directed policy changes without inferring one from the other.
+//
+// Lineage model:
+//
+//   When a principle is superseded, two lineage edges are recorded:
+//
+//     old.superseded_by = newId  — forward edge: old principle records its
+//                                   replacement for forward traversal.
+//     new.supersedes    = oldId  — backward edge: new principle records its
+//                                   predecessor for backward traversal.
+//
+//   Together these form a doubly-linked replacement chain, enabling an audit
+//   agent to step forward (superseded_by) or backward (supersedes) through
+//   the full principle evolution history.
+//
 // API surface:
 //
 //   registerPrinciple()      — add a new active governing principle derived
@@ -53,13 +84,16 @@
 //                              promoted.
 //   reactivatePrinciple()    — transition a SUBORDINATED principle back to
 //                              ACTIVE once the overriding constraint has
-//                              cleared.
+//                              cleared. Clears lifecycle_catalyst.
 //   supersedePrinciple()     — permanently retire a principle because a newer
 //                              rule has claimed full logical replacement.
+//                              Records forward and backward lineage edges.
 //   deprecatePrinciple()     — freeze a principle for legacy replay only;
 //                              block it from intervening in new proposals.
+//                              Records ADMINISTRATIVE catalyst.
 //   retirePrinciple()        — administratively remove a principle from all
-//                              future consideration.
+//                              future consideration. Records ADMINISTRATIVE
+//                              catalyst.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_AGGREGATE_TOLERANCE = void 0;
 exports.registerPrinciple = registerPrinciple;
@@ -224,6 +258,9 @@ function resolveConflict(principleA, principleB, conflictType, disposition = "SU
     const loserEntry = principleRegistry.find((p) => p.principle_id === loser.principle_id);
     if (loserEntry !== undefined) {
         loserEntry.lifecycle_state = disposition;
+        // Arbitration-driven transitions are empirical: the system detected a
+        // constraint collision at runtime and adjusted the principle's status.
+        loserEntry.lifecycle_catalyst = "EMPIRICAL";
     }
     resolutionLog.push(record);
     return record;
@@ -266,17 +303,24 @@ function aggregateEnvelopeCheck(proposedDelta, principles) {
 // LEVEL_0 constraint that suppressed a LEVEL_3 heuristic is itself superseded
 // by a new boundary condition). Attempting to reactivate a principle that is
 // not currently SUBORDINATED is a no-op and returns undefined.
+//
+// Clears lifecycle_catalyst because an ACTIVE principle is not in a
+// catalyst-driven non-active state.
 function reactivatePrinciple(principleId) {
     const entry = principleRegistry.find((p) => p.principle_id === principleId);
     if (entry === undefined || entry.lifecycle_state !== "SUBORDINATED") {
         return undefined;
     }
     entry.lifecycle_state = "ACTIVE";
+    delete entry.lifecycle_catalyst;
     return entry;
 }
 // Permanently retire a principle because a newer content-addressed principle
 // has claimed full logical replacement. Sets lifecycle_state to SUPERSEDED
-// and records the superseding principle's ID for lineage tracing.
+// and records the superseding principle's ID for forward lineage tracing.
+// Also records the backward lineage reference on the superseding principle
+// (supersedes field) if it exists in the registry, enabling bidirectional
+// traversal of the replacement chain.
 //
 // SUPERSEDED is terminal: a superseded principle cannot be reactivated. Its
 // historical record is preserved for audit and lineage reconstruction.
@@ -286,8 +330,17 @@ function supersedePrinciple(principleId, supersedingPrincipleId) {
         return undefined;
     }
     entry.lifecycle_state = "SUPERSEDED";
+    // Supersession is empirical: a newer, algorithmically validated principle
+    // has claimed full logical replacement of this one.
+    entry.lifecycle_catalyst = "EMPIRICAL";
     if (supersedingPrincipleId !== undefined) {
         entry.superseded_by = supersedingPrincipleId;
+        // Record the backward lineage edge on the superseding principle so that
+        // the replacement chain is traversable in both directions.
+        const supersedingEntry = principleRegistry.find((p) => p.principle_id === supersedingPrincipleId);
+        if (supersedingEntry !== undefined) {
+            supersedingEntry.supersedes = principleId;
+        }
     }
     return entry;
 }
@@ -299,12 +352,16 @@ function supersedePrinciple(principleId, supersedingPrincipleId) {
 // DEPRECATED is terminal from the perspective of active governance but not
 // from the perspective of historical record. Use retirePrinciple() to fully
 // remove a principle from future consideration.
+//
+// Deprecation is an administrative action: a maintainer has intentionally
+// changed the principle's policy scope or support status.
 function deprecatePrinciple(principleId) {
     const entry = principleRegistry.find((p) => p.principle_id === principleId);
     if (entry === undefined) {
         return undefined;
     }
     entry.lifecycle_state = "DEPRECATED";
+    entry.lifecycle_catalyst = "ADMINISTRATIVE";
     return entry;
 }
 // Formally purge a principle via administrative review. Sets lifecycle_state
@@ -313,12 +370,17 @@ function deprecatePrinciple(principleId) {
 // reached through deliberate review — not a consequence of runtime conflict.
 //
 // RETIRED is terminal.
+//
+// Retirement is an administrative action: a maintainer has explicitly decided
+// through review that the principle should no longer influence any future
+// trajectory, replay, or proposal evaluation.
 function retirePrinciple(principleId) {
     const entry = principleRegistry.find((p) => p.principle_id === principleId);
     if (entry === undefined) {
         return undefined;
     }
     entry.lifecycle_state = "RETIRED";
+    entry.lifecycle_catalyst = "ADMINISTRATIVE";
     return entry;
 }
 // Return a frozen copy of the principle registry.
