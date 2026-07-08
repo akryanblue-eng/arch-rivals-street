@@ -1,0 +1,10 @@
+{
+  "protocol_version": "1.0.0",
+  "question_set_hash": "72eaa7206c5fd59fe070bc001a2c1584ee071a631ecc1a252b76da05e72f9592",
+  "artifact_ids": [
+    "art-pristine-ref",
+    "art-kinematic-drift-v2",
+    "art-belief-shift-v2"
+  ],
+  "collection_status": "READY"
+}
