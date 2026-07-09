@@ -6,6 +6,14 @@
 //
 // Entry IDs are content-addressed (sha256) so duplicate proposals produce
 // the same ID regardless of when or where they are evaluated.
+//
+// AEP-MEM-001: queryPriorIntervention() — lookup before re-attempting.
+// AEP-MEM-002: evaluateContextDelta()   — contradiction resolution.
+//   When a historical veto exists, AEP-MEM-002 compares the current
+//   evaluation context against the context stored in the historical entry.
+//   If context has changed (Delta != Null), the veto is evaporated and
+//   the system proceeds to simulation. If context is identical (Delta == Null),
+//   HALTED_BY_MEMORY is returned without wasting simulation resources.
 
 import { createHash } from "crypto";
 import { AepDecision, EvolvableComponent } from "./AgentEvolutionProtocol";
@@ -19,6 +27,24 @@ export type JustificationLevel =
   | "L4_CORE_MODEL";
 
 export type LedgerVerdict = "PROMOTED" | "REJECTED" | "BLOCKED";
+
+// AEP-MEM-002: Resolution strategies for contradiction resolution.
+// When a historical veto is challenged by changed context, the system
+// classifies the change before evaporating the veto.
+//
+// SIMULATOR_INVALIDATION  — the old verdict was an artifact of a flawed or
+//                           outdated simulator; a more accurate simulator now
+//                           exists.
+// CONTEXTUAL_BIFURCATION  — the intervention targets a different domain or
+//                           sub-system than the historical failure context;
+//                           the old veto should not transfer.
+// BOUNDARY_SHIFT          — an environmental dependency or acceptance
+//                           threshold has moved, making a previously blocked
+//                           intervention viable.
+export type ResolutionType =
+  | "SIMULATOR_INVALIDATION"
+  | "CONTEXTUAL_BIFURCATION"
+  | "BOUNDARY_SHIFT";
 
 export type LedgerReasonCode =
   | "CONTROLLED_BEHAVIOR_IMPROVEMENT"
@@ -34,6 +60,27 @@ export type MemoryQueryResult =
   | "PRIOR_FAILURE"
   | "PRIOR_REJECTION"
   | "NOVEL_INTERVENTION";
+
+// Free-form key-value pairs describing the evaluation context at the time
+// a ledger entry was recorded. Enables AEP-MEM-002 to compute a context
+// delta when re-evaluating a previously vetoed intervention.
+export type ContextMetadata = Record<string, string>;
+
+// A single changed field captured in a context delta.
+export interface ContextDeltaField {
+  old: string;
+  new: string;
+}
+
+// AEP-MEM-002: resolution context written into a ledger entry that
+// overrules a prior veto. Creates a first-class relationship between
+// the new decision and the historical entry it supersedes.
+export interface ResolutionContext {
+  resolution_type: ResolutionType;
+  overruled_entry_id: string;
+  context_delta: Record<string, ContextDeltaField>;
+  evidence_required: boolean;
+}
 
 export interface LedgerProposal {
   observed_failure: string;
@@ -76,6 +123,8 @@ export interface AepDecisionLedgerEntry {
   governance_evaluation: GovernanceEvaluation;
   audit_trail: AuditTrail;
   causal_signature?: CausalSignature;
+  context_metadata?: ContextMetadata;
+  resolution_context?: ResolutionContext;
 }
 
 export interface MemoryQueryRequest {
@@ -95,6 +144,28 @@ export interface MemoryQueryResponse {
     | "PROCEED_TO_SIMULATION"
     | "DO_NOT_RETRY_WITHOUT_NEW_EVIDENCE";
   result: MemoryQueryResult;
+}
+
+// AEP-MEM-002: input for the context delta check.
+export interface ContextCheckRequest {
+  target_subsystem: EvolvableComponent;
+  proposal_class: string;
+  current_context: ContextMetadata;
+}
+
+// Outcome of an AEP-MEM-002 context delta evaluation.
+//
+// HALTED_BY_MEMORY  — context is identical to the historical veto; the system
+//                     should not retry without additional evidence.
+// VETO_EVAPORATED   — context has changed sufficiently; the historical veto
+//                     no longer applies; proceed to ladder check and simulation.
+export type ContextCheckOutcome = "HALTED_BY_MEMORY" | "VETO_EVAPORATED";
+
+export interface ContextCheckResponse {
+  outcome: ContextCheckOutcome;
+  overruled_entry_id?: string;
+  resolution_type?: ResolutionType;
+  context_delta?: Record<string, ContextDeltaField>;
 }
 
 // Maps each EvolvableComponent to its intervention ladder classification.
@@ -193,7 +264,9 @@ function computeExecutionHash(decision: AepDecision): string | undefined {
 export function appendEntry(
   decision: AepDecision,
   observedFailure: string,
-  causalSignature?: CausalSignature
+  causalSignature?: CausalSignature,
+  contextMetadata?: ContextMetadata,
+  resolutionContext?: ResolutionContext
 ): AepDecisionLedgerEntry {
   const targetSubsystem = decision.proposal.component;
   const proposedIntervention = decision.proposal.change;
@@ -233,6 +306,8 @@ export function appendEntry(
       ...(executionHash !== undefined && { execution_hash: executionHash }),
     },
     ...(causalSignature !== undefined && { causal_signature: causalSignature }),
+    ...(contextMetadata !== undefined && { context_metadata: contextMetadata }),
+    ...(resolutionContext !== undefined && { resolution_context: resolutionContext }),
   };
 
   decisionLedger.push(entry);
@@ -309,6 +384,121 @@ export function queryPriorIntervention(
 // Return a frozen copy of the full decision ledger.
 export function dumpDecisionLedger(): readonly AepDecisionLedgerEntry[] {
   return Object.freeze([...decisionLedger]);
+}
+
+// AEP-MEM-002: Evaluate whether the current evaluation context differs from
+// the context stored in the most recent BLOCKED or REJECTED ledger entry for
+// the same intervention class.
+//
+// Control flow:
+//
+//   Prior decision found
+//        │
+//        ▼
+//   Compare current_context vs entry.context_metadata
+//        │
+//   ┌────┴────────────────────────────┐
+//   │                                 │
+//   ▼                                 ▼
+// Delta == Null               Delta != Null
+// (identical context)         (environmental drift)
+//        │                            │
+//        ▼                            ▼
+// HALTED_BY_MEMORY            VETO_EVAPORATED
+//                             (proceed to simulation)
+//
+// If no prior failure is found, returns VETO_EVAPORATED (no veto to evaluate).
+// If a prior failure exists but carries no context_metadata, returns
+// HALTED_BY_MEMORY — absent metadata is treated as identical context to
+// prevent an evidence-free override.
+export function evaluateContextDelta(
+  request: ContextCheckRequest
+): ContextCheckResponse {
+  const failureMatches = decisionLedger.filter(
+    (e) =>
+      e.target_subsystem === request.target_subsystem &&
+      e.proposal.proposed_intervention
+        .toLowerCase()
+        .includes(request.proposal_class.toLowerCase()) &&
+      (e.governance_evaluation.verdict === "BLOCKED" ||
+        e.governance_evaluation.verdict === "REJECTED")
+  );
+
+  if (failureMatches.length === 0) {
+    return { outcome: "VETO_EVAPORATED" };
+  }
+
+  const latest = failureMatches[failureMatches.length - 1];
+  const historicalContext = latest.context_metadata;
+
+  // No stored context metadata means the original entry predates context
+  // tracking. Treat as identical context — require explicit new evidence.
+  if (historicalContext === undefined) {
+    return {
+      outcome: "HALTED_BY_MEMORY",
+      overruled_entry_id: latest.entry_id,
+    };
+  }
+
+  // Compute the context delta: fields that exist in both contexts but differ,
+  // or fields present in one context but absent from the other.
+  const delta: Record<string, ContextDeltaField> = {};
+  const allKeys = new Set([
+    ...Object.keys(historicalContext),
+    ...Object.keys(request.current_context),
+  ]);
+
+  for (const key of allKeys) {
+    const oldVal = historicalContext[key];
+    const newVal = request.current_context[key];
+    if (oldVal !== newVal) {
+      delta[key] = {
+        old: oldVal ?? "(absent)",
+        new: newVal ?? "(absent)",
+      };
+    }
+  }
+
+  if (Object.keys(delta).length === 0) {
+    // Delta == Null: context is identical — veto stands.
+    return {
+      outcome: "HALTED_BY_MEMORY",
+      overruled_entry_id: latest.entry_id,
+    };
+  }
+
+  // Delta != Null: context has changed — classify the resolution type and
+  // evaporate the veto.
+  const resolution_type = inferResolutionType(delta);
+
+  return {
+    outcome: "VETO_EVAPORATED",
+    overruled_entry_id: latest.entry_id,
+    resolution_type,
+    context_delta: delta,
+  };
+}
+
+// Infer the resolution type from the changed context fields.
+// Checks for well-known simulator-related keys first; falls back to
+// BOUNDARY_SHIFT for other environmental changes.
+function inferResolutionType(
+  delta: Record<string, ContextDeltaField>
+): ResolutionType {
+  const keys = Object.keys(delta);
+  if (
+    keys.some(
+      (k) =>
+        k.toLowerCase().includes("simulator") ||
+        k.toLowerCase().includes("interpolation")
+    )
+  ) {
+    return "SIMULATOR_INVALIDATION";
+  }
+  if (keys.some((k) => k.toLowerCase().includes("domain"))) {
+    return "CONTEXTUAL_BIFURCATION";
+  }
+  return "BOUNDARY_SHIFT";
 }
 
 // Reset the in-process ledger for isolated test runs.

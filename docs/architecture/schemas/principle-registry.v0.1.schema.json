@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "principle-registry.v0.1.schema.json",
+  "title": "PrincipleEntry",
+  "description": "A governing principle extracted from a promoted AEP governance decision. Principles are immutable once registered; arbitration outcome is recorded via PrincipleResolutionRecord rather than by modifying the principle. The `lifecycle_state` field is the only mutable field: it advances through the lifecycle state machine as arbitration and explicit lifecycle management events occur.",
+  "type": "object",
+  "required": [
+    "principle_id",
+    "principle_class",
+    "scope_descriptor",
+    "source_entry_id",
+    "lifecycle_state"
+  ],
+  "properties": {
+    "principle_id": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "Content-addressed identifier derived from principle_class, scope_descriptor, and source_entry_id. Two identical principles produce the same ID, making duplicates detectable."
+    },
+    "principle_class": {
+      "type": "string",
+      "enum": [
+        "LEVEL_0_DETERMINISM_INTEGRITY",
+        "LEVEL_1_SAFETY_BOUNDARY",
+        "LEVEL_2_SIMULATION_ACCURACY",
+        "LEVEL_3_BEHAVIORAL_OPTIMIZATION",
+        "LEVEL_4_PREFERENCE_STYLE"
+      ],
+      "description": "Taxonomy hierarchy classification. Lower level number = higher authority. LEVEL_0 always overrides LEVEL_3 when constraints collide. The hierarchy: LEVEL_0 (determinism/integrity invariants) > LEVEL_1 (safety boundaries) > LEVEL_2 (simulation accuracy) > LEVEL_3 (behavioral optimization heuristics) > LEVEL_4 (preference/style guidance)."
+    },
+    "scope_descriptor": {
+      "type": "string",
+      "description": "Human-readable specificity annotation describing the scope of the governing rule. Narrower (more qualified) rules have longer, more specific descriptors. Used by the SPECIFICITY_COLLISION resolution path: the principle with the longer scope_descriptor wins within the same taxonomy level."
+    },
+    "source_entry_id": {
+      "type": "string",
+      "description": "entry_id of the AepDecisionLedgerEntry whose PROMOTED verdict produced this principle. Creates a traceable link from the active governing principle back to the governance event that justified it."
+    },
+    "tolerance_delta": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Optional numeric tolerance contribution. When a principle permits a floating-point tolerance (e.g. +0.003 coordinate drift), record it here so aggregateEnvelopeCheck() can sum contributions across all ACTIVE principles and guard against cumulative drift breaching the global invariant envelope (MAX_AGGREGATE_TOLERANCE = 0.01)."
+    },
+    "lifecycle_state": {
+      "type": "string",
+      "enum": [
+        "ACTIVE",
+        "SUBORDINATED",
+        "SUPERSEDED",
+        "DEPRECATED",
+        "RETIRED"
+      ],
+      "description": "Current lifecycle state of this principle. ACTIVE: currently governing execution. SUBORDINATED: temporarily muted by a higher-priority overlapping constraint; reversible via reactivatePrinciple(). SUPERSEDED: permanently replaced by a newer content-addressed principle. DEPRECATED: frozen for legacy replay only; blocked from new proposals. RETIRED: administratively removed from all future consideration. Only ACTIVE principles contribute to execution governance. Only ACTIVE principles are counted by aggregateEnvelopeCheck()."
+    },
+    "superseded_by": {
+      "type": "string",
+      "description": "Optional principle_id of the principle that superseded this one. Only set when lifecycle_state is SUPERSEDED. Forward lineage edge: enables traversal from ancestor to successor through the replacement chain."
+    },
+    "supersedes": {
+      "type": "string",
+      "description": "Optional principle_id of the principle that this principle directly superseded. Set on the newer (replacing) principle when supersedePrinciple() is called with a supersedingPrincipleId. Backward lineage edge: enables traversal from successor back to ancestor, complementing the superseded_by forward pointer. Together they form a doubly-linked replacement chain across principle generations."
+    },
+    "lifecycle_catalyst": {
+      "type": "string",
+      "enum": [
+        "EMPIRICAL",
+        "ADMINISTRATIVE"
+      ],
+      "description": "Catalyst that drove the most recent lifecycle state transition out of ACTIVE. EMPIRICAL: triggered by runtime arbitration or simulation evidence (SUBORDINATED from resolveConflict; SUPERSEDED from supersedePrinciple). ADMINISTRATIVE: triggered by deliberate maintainer policy action (DEPRECATED from deprecatePrinciple; RETIRED from retirePrinciple). Absent when lifecycle_state is ACTIVE. Cleared when a SUBORDINATED principle is reactivated. Preserved permanently for terminal states."
+    }
+  },
+  "additionalProperties": false
+}
