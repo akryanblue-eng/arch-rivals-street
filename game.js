@@ -39,7 +39,7 @@ window.addEventListener("keyup", e => keys[e.key] = false);
 // aiState, score). Animation timing must never become an input to steals,
 // movement, scoring, or possession.
 function makeVisual(x, y) {
-  return { squash: 1, angle: 0, facing: 1, bob: 0, bobPhase: 0, flash: 0, prevX: x, prevY: y };
+  return { squash: 1, angle: 0, facing: 1, bob: 0, bobPhase: 0, flash: 0, lunge: 0, prevX: x, prevY: y };
 }
 
 const ballTrail = [];
@@ -48,6 +48,11 @@ let shakeMagnitude = 0;
 let zoom = 1;
 let zoomFocusX = 450;
 let zoomFocusY = 300;
+let ballPop = 0; // purely a drawn-radius bump on the ball, never touches its real x/y/vx/vy
+
+function triggerBallPop() {
+  ballPop = 1;
+}
 
 // Camera: a fixed zoom-to-fill factor plus horizontal follow of the ball.
 // Two separate rects on purpose: CAMERA_FIT controls how tightly zoomed in
@@ -275,8 +280,11 @@ function evaluateStealState(defender, carrier) {
   state.ball.vy = (dy / dist) * 3;
   defender.pressure = 0;
   defender.visual.flash = 1;
+  defender.visual.lunge = 1;
   spawnFlash(defender.x, defender.y);
+  triggerBallPop();
   triggerShake(2.5);
+  triggerZoomPulse(1.06, defender.x, defender.y);
 }
 
 function decideAiState(player) {
@@ -347,6 +355,9 @@ function updateEffects() {
   zoom = 1 + (zoom - 1) * 0.9;
   if (Math.abs(zoom - 1) < 0.001) zoom = 1;
 
+  ballPop *= 0.8;
+  if (ballPop < 0.02) ballPop = 0;
+
   ballTrail.push({ x: state.ball.x, y: state.ball.y });
   if (ballTrail.length > 10) ballTrail.shift();
 }
@@ -373,6 +384,13 @@ function updateVisuals() {
 
     v.flash *= 0.85;
     if (v.flash < 0.02) v.flash = 0;
+
+    // Steal signature: v.lunge starts at 1 the instant a steal fires (see
+    // evaluateStealState), reads as a forward lunge/contact pose while
+    // high, and its own decay curve doubles as the recovery back to a
+    // normal stance — one scalar, no separate animation states needed.
+    v.lunge *= 0.82;
+    if (v.lunge < 0.02) v.lunge = 0;
 
     v.prevX = p.x;
     v.prevY = p.y;
@@ -519,7 +537,12 @@ function playerFillColor(p) {
 
 function drawPlayer(p) {
   const v = p.visual;
-  const stretch = 1 / v.squash;
+  // Steal lunge/contact/recovery is one decaying scalar (v.lunge) layered
+  // on top of the normal movement squash-stretch: an extra forward stretch
+  // and downward squash while high, easing back to the normal pose as it
+  // decays — that easing back IS the recovery, no separate state needed.
+  const stretch = (1 / v.squash) * (1 + v.lunge * 0.4);
+  const squash = v.squash * (1 - v.lunge * 0.3);
   const isA = p.team === "A";
   const fill = playerFillColor(p);
   const outline = isA ? "#1e3a8a" : "#7f1d1d";
@@ -531,7 +554,7 @@ function drawPlayer(p) {
   ctx.save();
   ctx.translate(p.x, drawY);
   ctx.rotate(v.angle);
-  ctx.scale(stretch, v.squash);
+  ctx.scale(stretch, squash);
   ctx.beginPath();
   ctx.ellipse(0, 0, BODY_RX, BODY_RY, 0, 0, Math.PI * 2);
   ctx.fillStyle = fill;
@@ -562,18 +585,19 @@ function drawPlayer(p) {
 
 function drawBall() {
   const ball = state.ball;
+  const r = 6 + ballPop * 4; // drawn-radius bump only; ball.x/y/vx/vy are untouched
   ctx.beginPath();
-  ctx.arc(ball.x, ball.y, 6, 0, Math.PI * 2);
+  ctx.arc(ball.x, ball.y, r, 0, Math.PI * 2);
   ctx.fillStyle = "#f97316";
   ctx.fill();
   ctx.strokeStyle = "#7c2d12";
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(ball.x - 6, ball.y);
-  ctx.lineTo(ball.x + 6, ball.y);
-  ctx.moveTo(ball.x, ball.y - 6);
-  ctx.lineTo(ball.x, ball.y + 6);
+  ctx.moveTo(ball.x - r, ball.y);
+  ctx.lineTo(ball.x + r, ball.y);
+  ctx.moveTo(ball.x, ball.y - r);
+  ctx.lineTo(ball.x, ball.y + r);
   ctx.stroke();
 }
 
