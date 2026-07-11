@@ -54,6 +54,32 @@ function triggerBallPop() {
   ballPop = 1;
 }
 
+// Dribble signature: a rhythmic bounce read purely off the ball's own
+// position delta each frame (identical to the carrier's delta while
+// owned, since updateBall() snaps ball.x/y to the carrier exactly) — no
+// dependency on player.visual internals, so this stays fully self-
+// contained. bounce only ever affects drawBall()'s drawn radius/offset,
+// never state.ball.x/y/vx/vy.
+const ballVisual = { prevX: 300, prevY: 300, bouncePhase: 0, bounce: 0 };
+
+function updateBallVisual() {
+  const ball = state.ball;
+  const dx = ball.x - ballVisual.prevX;
+  const dy = ball.y - ballVisual.prevY;
+  const speed = Math.sqrt(dx * dx + dy * dy);
+
+  if (ball.owner && speed > 0.1) {
+    ballVisual.bouncePhase += 0.9;
+    ballVisual.bounce = Math.abs(Math.sin(ballVisual.bouncePhase));
+  } else {
+    ballVisual.bounce *= 0.8;
+    if (ballVisual.bounce < 0.02) ballVisual.bounce = 0;
+  }
+
+  ballVisual.prevX = ball.x;
+  ballVisual.prevY = ball.y;
+}
+
 // Camera: a fixed zoom-to-fill factor plus horizontal follow of the ball.
 // Two separate rects on purpose: CAMERA_FIT controls how tightly zoomed in
 // the view is (smaller = more zoomed), CAMERA_PAN_BOUNDS controls how far
@@ -422,6 +448,7 @@ function update() {
   updateEffects();
   updateVisuals();
   updateCamera();
+  updateBallVisual();
 }
 
 // Screen-space only: always full-bleed regardless of camera pan/zoom. This
@@ -585,19 +612,23 @@ function drawPlayer(p) {
 
 function drawBall() {
   const ball = state.ball;
-  const r = 6 + ballPop * 4; // drawn-radius bump only; ball.x/y/vx/vy are untouched
+  // Dribble bounce compresses the drawn radius and dips the drawn position
+  // slightly at each bounce peak; drawn-only, ball.x/y/vx/vy are untouched.
+  const dribbleSquash = ballVisual.bounce * 0.3;
+  const r = (6 + ballPop * 4) * (1 - dribbleSquash);
+  const drawY = ball.y + ballVisual.bounce * 4;
   ctx.beginPath();
-  ctx.arc(ball.x, ball.y, r, 0, Math.PI * 2);
+  ctx.arc(ball.x, drawY, r, 0, Math.PI * 2);
   ctx.fillStyle = "#f97316";
   ctx.fill();
   ctx.strokeStyle = "#7c2d12";
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(ball.x - r, ball.y);
-  ctx.lineTo(ball.x + r, ball.y);
-  ctx.moveTo(ball.x, ball.y - r);
-  ctx.lineTo(ball.x, ball.y + r);
+  ctx.moveTo(ball.x - r, drawY);
+  ctx.lineTo(ball.x + r, drawY);
+  ctx.moveTo(ball.x, drawY - r);
+  ctx.lineTo(ball.x, drawY + r);
   ctx.stroke();
 }
 
