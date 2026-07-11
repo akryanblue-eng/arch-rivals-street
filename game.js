@@ -696,9 +696,38 @@ function drawWinBanner() {
   ctx.restore();
 }
 
+// Section boundaries for render(), so future branches (environment/court
+// dressing vs. gameplay-actor "juice") have separate landing zones instead
+// of every visual change piling into one function. Each is a thin wrapper
+// around the existing draw* functions — no behavior change, just grouping.
+function drawEnvironment() {
+  drawBackground();
+}
+
+function drawGameplayActors() {
+  drawBallTrail();
+  for (const pl of state.players) {
+    drawShadow(pl.x, pl.y);
+    drawPlayer(pl);
+  }
+  drawShadow(state.ball.x, state.ball.y, 6);
+  drawBall();
+}
+
+function drawGameplayEffects() {
+  drawEffects();
+}
+
+function drawHud() {
+  drawScoreboard();
+  if (state.gameOver) {
+    drawWinBanner();
+  }
+}
+
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawBackground();
+  drawEnvironment();
 
   const cam = getCameraTransform();
   ctx.save();
@@ -712,24 +741,12 @@ function render() {
   ctx.translate((Math.random() - 0.5) * shakeMagnitude, (Math.random() - 0.5) * shakeMagnitude);
 
   drawCourt();
-  drawBallTrail();
-
-  for (const pl of state.players) {
-    drawShadow(pl.x, pl.y);
-    drawPlayer(pl);
-  }
-  drawShadow(state.ball.x, state.ball.y, 6);
-  drawBall();
-
-  drawEffects();
+  drawGameplayActors();
+  drawGameplayEffects();
 
   ctx.restore();
 
-  drawScoreboard();
-
-  if (state.gameOver) {
-    drawWinBanner();
-  }
+  drawHud();
 }
 
 function loop() {
