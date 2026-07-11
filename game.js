@@ -24,6 +24,35 @@ const keys = {};
 window.addEventListener("keydown", e => keys[e.key] = true);
 window.addEventListener("keyup", e => keys[e.key] = false);
 
+// Cosmetic-only presentation state: ball trail, transient effects (impact
+// flash, score popups), screen shake, and camera zoom. None of this feeds
+// back into game logic, so it can use randomness freely without touching
+// the deterministic simulation above.
+const ballTrail = [];
+const effects = [];
+let shakeMagnitude = 0;
+let zoom = 1;
+let zoomFocusX = 450;
+let zoomFocusY = 300;
+
+function triggerShake(amount) {
+  shakeMagnitude = Math.max(shakeMagnitude, amount);
+}
+
+function triggerZoomPulse(amount, focusX, focusY) {
+  zoom = Math.max(zoom, amount);
+  zoomFocusX = focusX;
+  zoomFocusY = focusY;
+}
+
+function spawnFlash(x, y) {
+  effects.push({ type: "flash", x, y, ttl: 14, maxTtl: 14 });
+}
+
+function spawnPopup(x, y, text, color) {
+  effects.push({ type: "popup", x, y, text, color, ttl: 40, maxTtl: 40 });
+}
+
 function tryGainPossession(player) {
   if (state.ball.owner) return;
   const dx = player.x - state.ball.x;
@@ -44,6 +73,7 @@ function shoot(player) {
   const power = 0.08;
   state.ball.vx = dx * power;
   state.ball.vy = dy * power - 2;
+  triggerZoomPulse(1.12, hoop.x, hoop.y);
 }
 
 function updateBall() {
@@ -98,6 +128,7 @@ function resetAfterScore() {
   ball.vy = 0;
   ball.x = 450;
   ball.y = 300;
+  ballTrail.length = 0;
 }
 
 function checkScore() {
@@ -110,6 +141,9 @@ function checkScore() {
     if (Math.sqrt(dx * dx + dy * dy) < 14) {
       const team = attackingTeamForHoop(hoop);
       state.score[team] += POINTS_PER_BASKET;
+      spawnPopup(hoop.x, hoop.y - 20, `+${POINTS_PER_BASKET}`, team === "A" ? "#60a5fa" : "#f87171");
+      triggerShake(6);
+      triggerZoomPulse(1.25, hoop.x, hoop.y);
       if (state.score[team] >= WIN_SCORE) {
         state.gameOver = true;
         state.winner = team;
@@ -186,6 +220,8 @@ function evaluateStealState(defender, carrier) {
   state.ball.vx = (dx / dist) * 3;
   state.ball.vy = (dy / dist) * 3;
   defender.pressure = 0;
+  spawnFlash(defender.x, defender.y);
+  triggerShake(2.5);
 }
 
 function decideAiState(player) {
@@ -199,9 +235,17 @@ function moveToward(player, tx, ty, standoff = 0) {
   const dx = tx - player.x;
   const dy = ty - player.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist <= standoff) return;
-  player.x += (dx / dist) * AI_SPEED;
-  player.y += (dy / dist) * AI_SPEED;
+  if (dist <= standoff) {
+    player.vx = 0;
+    player.vy = 0;
+    return;
+  }
+  const stepX = (dx / dist) * AI_SPEED;
+  const stepY = (dy / dist) * AI_SPEED;
+  player.x += stepX;
+  player.y += stepY;
+  player.vx = stepX;
+  player.vy = stepY;
 }
 
 function attackHoopFor(team) {
@@ -244,13 +288,35 @@ function runDefenderAI(player) {
   clampToCourt(player);
 }
 
+function updateEffects() {
+  for (let i = effects.length - 1; i >= 0; i--) {
+    effects[i].ttl--;
+    if (effects[i].ttl <= 0) effects.splice(i, 1);
+  }
+
+  shakeMagnitude *= 0.85;
+  if (shakeMagnitude < 0.05) shakeMagnitude = 0;
+
+  zoom = 1 + (zoom - 1) * 0.9;
+  if (Math.abs(zoom - 1) < 0.001) zoom = 1;
+
+  ballTrail.push({ x: state.ball.x, y: state.ball.y });
+  if (ballTrail.length > 10) ballTrail.shift();
+}
+
 function update() {
   const p = state.players[0];
   const speed = 2;
-  if (keys["ArrowUp"]) p.y -= speed;
-  if (keys["ArrowDown"]) p.y += speed;
-  if (keys["ArrowLeft"]) p.x -= speed;
-  if (keys["ArrowRight"]) p.x += speed;
+  let dx = 0;
+  let dy = 0;
+  if (keys["ArrowUp"]) dy -= speed;
+  if (keys["ArrowDown"]) dy += speed;
+  if (keys["ArrowLeft"]) dx -= speed;
+  if (keys["ArrowRight"]) dx += speed;
+  p.x += dx;
+  p.y += dy;
+  p.vx = dx;
+  p.vy = dy;
   clampToCourt(p);
 
   if (keys[" "]) shoot(p);
@@ -266,47 +332,210 @@ function update() {
   updateBall();
   checkScore();
   checkRebound();
+  updateEffects();
 }
 
-function render() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+function drawBackground() {
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  grad.addColorStop(0, "#1b1f24");
+  grad.addColorStop(1, "#0d0f12");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  ctx.strokeStyle = "white";
+  for (const lx of [80, canvas.width - 80]) {
+    const glow = ctx.createRadialGradient(lx, 20, 5, lx, 20, 160);
+    glow.addColorStop(0, "rgba(255, 244, 200, 0.22)");
+    glow.addColorStop(1, "rgba(255, 244, 200, 0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  ctx.fillStyle = "#05060a";
+  for (let x = 0; x < canvas.width; x += 14) {
+    const h1 = 12 + Math.sin(x * 0.7) * 4;
+    ctx.fillRect(x, 0, 10, h1);
+    const h2 = 12 + Math.cos(x * 0.5) * 4;
+    ctx.fillRect(x, canvas.height - h2, 10, h2);
+  }
+
+  ctx.save();
+  ctx.setLineDash([6, 6]);
+  ctx.strokeStyle = "rgba(200, 200, 200, 0.35)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(30, 30, canvas.width - 60, canvas.height - 60);
+  ctx.restore();
+}
+
+function drawCourt() {
+  ctx.fillStyle = "rgba(59, 130, 246, 0.12)";
+  ctx.fillRect(50, 220, 130, 160);
+  ctx.fillStyle = "rgba(239, 68, 68, 0.12)";
+  ctx.fillRect(720, 220, 130, 160);
+
+  ctx.strokeStyle = "#e8e8e8";
+  ctx.lineWidth = 2;
   ctx.strokeRect(50, 50, 800, 500);
+  ctx.strokeRect(50, 220, 130, 160);
+  ctx.strokeRect(720, 220, 130, 160);
+
   ctx.beginPath();
   ctx.moveTo(450, 50);
   ctx.lineTo(450, 550);
   ctx.stroke();
 
   ctx.beginPath();
-  ctx.arc(HOOP_LEFT.x, HOOP_LEFT.y, 6, 0, Math.PI * 2);
-  ctx.arc(HOOP_RIGHT.x, HOOP_RIGHT.y, 6, 0, Math.PI * 2);
-  ctx.strokeStyle = "yellow";
+  ctx.arc(450, 300, 55, 0, Math.PI * 2);
   ctx.stroke();
 
-  for (const pl of state.players) {
-    ctx.beginPath();
-    ctx.arc(pl.x, pl.y, 10, 0, Math.PI * 2);
-    ctx.fillStyle = pl.team === "A" ? "blue" : "red";
-    ctx.fill();
-  }
+  ctx.beginPath();
+  ctx.arc(80, 300, 210, -1.0, 1.0);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(820, 300, 210, Math.PI - 1.0, Math.PI + 1.0);
+  ctx.stroke();
 
   ctx.beginPath();
-  ctx.arc(state.ball.x, state.ball.y, 5, 0, Math.PI * 2);
-  ctx.fillStyle = "orange";
-  ctx.fill();
+  ctx.arc(HOOP_LEFT.x, HOOP_LEFT.y, 6, 0, Math.PI * 2);
+  ctx.arc(HOOP_RIGHT.x, HOOP_RIGHT.y, 6, 0, Math.PI * 2);
+  ctx.strokeStyle = "#facc15";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+}
 
+function drawShadow(x, y, r = 11) {
+  ctx.beginPath();
+  ctx.ellipse(x, y + r * 0.9, r, r * 0.4, 0, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+  ctx.fill();
+}
+
+function drawBallTrail() {
+  const n = ballTrail.length;
+  for (let i = 0; i < n; i++) {
+    const t = ballTrail[i];
+    const age = n - i;
+    const alpha = 0.22 * (1 - age / n);
+    if (alpha <= 0) continue;
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, Math.max(1, 5 - age * 0.3), 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(249, 115, 22, ${alpha.toFixed(2)})`;
+    ctx.fill();
+  }
+}
+
+function drawPlayer(p) {
+  const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+  const stretch = 1 + Math.min(speed / 3, 1) * 0.25;
+  const squash = 1 / stretch;
+  const angle = speed > 0.05 ? Math.atan2(p.vy, p.vx) : 0;
+  const isA = p.team === "A";
+  const fill = isA ? "#3b82f6" : "#ef4444";
+  const outline = isA ? "#1e3a8a" : "#7f1d1d";
+
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(angle);
+  ctx.scale(stretch, squash);
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 11, 9, 0, 0, Math.PI * 2);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = outline;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.beginPath();
+  ctx.arc(p.x, p.y - 11, 5, 0, Math.PI * 2);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = outline;
+  ctx.stroke();
+}
+
+function drawBall() {
+  const ball = state.ball;
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, 6, 0, Math.PI * 2);
+  ctx.fillStyle = "#f97316";
+  ctx.fill();
+  ctx.strokeStyle = "#7c2d12";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(ball.x - 6, ball.y);
+  ctx.lineTo(ball.x + 6, ball.y);
+  ctx.moveTo(ball.x, ball.y - 6);
+  ctx.lineTo(ball.x, ball.y + 6);
+  ctx.stroke();
+}
+
+function drawEffects() {
+  for (const fx of effects) {
+    const t = fx.ttl / fx.maxTtl;
+    if (fx.type === "flash") {
+      ctx.beginPath();
+      ctx.arc(fx.x, fx.y, (1 - t) * 24, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255, 255, 255, ${t.toFixed(2)})`;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    } else if (fx.type === "popup") {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, t);
+      ctx.fillStyle = fx.color;
+      ctx.font = "bold 20px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(fx.text, fx.x, fx.y - (1 - t) * 30);
+      ctx.restore();
+    }
+  }
+}
+
+function drawScoreboard() {
   ctx.fillStyle = "white";
   ctx.font = "24px sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(`${state.score.A} - ${state.score.B}`, canvas.width / 2, 35);
+}
+
+function drawWinBanner() {
+  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "gold";
+  ctx.font = "48px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(`TEAM ${state.winner} WINS`, canvas.width / 2, canvas.height / 2);
+}
+
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.save();
+  ctx.translate(zoomFocusX, zoomFocusY);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-zoomFocusX, -zoomFocusY);
+  ctx.translate((Math.random() - 0.5) * shakeMagnitude, (Math.random() - 0.5) * shakeMagnitude);
+
+  drawBackground();
+  drawCourt();
+  drawBallTrail();
+
+  for (const pl of state.players) {
+    drawShadow(pl.x, pl.y);
+    drawPlayer(pl);
+  }
+  drawShadow(state.ball.x, state.ball.y, 6);
+  drawBall();
+
+  drawEffects();
+
+  ctx.restore();
+
+  drawScoreboard();
 
   if (state.gameOver) {
-    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "gold";
-    ctx.font = "48px sans-serif";
-    ctx.fillText(`TEAM ${state.winner} WINS`, canvas.width / 2, canvas.height / 2);
+    drawWinBanner();
   }
 }
 
