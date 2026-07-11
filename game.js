@@ -1,6 +1,13 @@
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resizeCanvas();
+window.addEventListener("resize", resizeCanvas);
+
 const HOOP_LEFT = { x: 80, y: 300 };
 const HOOP_RIGHT = { x: 820, y: 300 };
 
@@ -32,7 +39,7 @@ window.addEventListener("keyup", e => keys[e.key] = false);
 // aiState, score). Animation timing must never become an input to steals,
 // movement, scoring, or possession.
 function makeVisual(x, y) {
-  return { squash: 1, angle: 0, facing: 1, bob: 0, bobPhase: 0, flash: 0, prevX: x, prevY: y };
+  return { squash: 1, angle: 0, facing: 1, bob: 0, bobPhase: 0, flash: 0, lunge: 0, prevX: x, prevY: y };
 }
 
 const ballTrail = [];
@@ -41,6 +48,50 @@ let shakeMagnitude = 0;
 let zoom = 1;
 let zoomFocusX = 450;
 let zoomFocusY = 300;
+let ballPop = 0; // purely a drawn-radius bump on the ball, never touches its real x/y/vx/vy
+
+function triggerBallPop() {
+  ballPop = 1;
+}
+
+// Camera: a fixed zoom-to-fill factor plus horizontal follow of the ball.
+// Two separate rects on purpose: CAMERA_FIT controls how tightly zoomed in
+// the view is (smaller = more zoomed), CAMERA_PAN_BOUNDS controls how far
+// the camera's center may travel — deliberately wider than the court so
+// court-edge geometry (hoops, backboards) never clips against the canvas
+// edge even when the existing shot/score zoom-pulse (unchanged, below)
+// briefly stacks extra zoom on top of this base. Purely a world-to-screen
+// mapping for rendering — world coordinates (HOOP_LEFT, clampToCourt's
+// bounds, the 450/300 reset point, etc.) are untouched.
+const CAMERA_FIT = { width: 700, height: 460 };
+const CAMERA_PAN_BOUNDS = { left: -40, right: 940, top: 10, bottom: 590 };
+const CAMERA_ZOOM = 1.55;
+let cameraX = 450;
+let cameraY = 300;
+
+function updateCamera() {
+  cameraX += (state.ball.x - cameraX) * 0.06;
+  cameraY += (300 - cameraY) * 0.06;
+}
+
+function getCameraTransform() {
+  const scale = Math.max(canvas.width / CAMERA_FIT.width, canvas.height / CAMERA_FIT.height) * CAMERA_ZOOM;
+
+  const halfW = canvas.width / scale / 2;
+  const halfH = canvas.height / scale / 2;
+
+  let x = cameraX;
+  const minX = CAMERA_PAN_BOUNDS.left + halfW;
+  const maxX = CAMERA_PAN_BOUNDS.right - halfW;
+  x = minX <= maxX ? Math.max(minX, Math.min(maxX, x)) : (CAMERA_PAN_BOUNDS.left + CAMERA_PAN_BOUNDS.right) / 2;
+
+  let y = cameraY;
+  const minY = CAMERA_PAN_BOUNDS.top + halfH;
+  const maxY = CAMERA_PAN_BOUNDS.bottom - halfH;
+  y = minY <= maxY ? Math.max(minY, Math.min(maxY, y)) : (CAMERA_PAN_BOUNDS.top + CAMERA_PAN_BOUNDS.bottom) / 2;
+
+  return { scale, x, y };
+}
 
 function triggerShake(amount) {
   shakeMagnitude = Math.max(shakeMagnitude, amount);
@@ -150,8 +201,9 @@ function checkScore() {
       state.score[team] += POINTS_PER_BASKET;
       spawnPopup(hoop.x, hoop.y - 20, `+${POINTS_PER_BASKET}`, team === "A" ? "#60a5fa" : "#f87171");
       triggerShake(6);
-      triggerZoomPulse(1.25, hoop.x, hoop.y);
-      if (state.score[team] >= WIN_SCORE) {
+      const isWinningBasket = state.score[team] >= WIN_SCORE;
+      triggerZoomPulse(isWinningBasket ? 1.7 : 1.25, hoop.x, hoop.y);
+      if (isWinningBasket) {
         state.gameOver = true;
         state.winner = team;
       }
@@ -228,8 +280,11 @@ function evaluateStealState(defender, carrier) {
   state.ball.vy = (dy / dist) * 3;
   defender.pressure = 0;
   defender.visual.flash = 1;
+  defender.visual.lunge = 1;
   spawnFlash(defender.x, defender.y);
+  triggerBallPop();
   triggerShake(2.5);
+  triggerZoomPulse(1.06, defender.x, defender.y);
 }
 
 function decideAiState(player) {
@@ -300,6 +355,9 @@ function updateEffects() {
   zoom = 1 + (zoom - 1) * 0.9;
   if (Math.abs(zoom - 1) < 0.001) zoom = 1;
 
+  ballPop *= 0.8;
+  if (ballPop < 0.02) ballPop = 0;
+
   ballTrail.push({ x: state.ball.x, y: state.ball.y });
   if (ballTrail.length > 10) ballTrail.shift();
 }
@@ -326,6 +384,13 @@ function updateVisuals() {
 
     v.flash *= 0.85;
     if (v.flash < 0.02) v.flash = 0;
+
+    // Steal signature: v.lunge starts at 1 the instant a steal fires (see
+    // evaluateStealState), reads as a forward lunge/contact pose while
+    // high, and its own decay curve doubles as the recovery back to a
+    // normal stance — one scalar, no separate animation states needed.
+    v.lunge *= 0.82;
+    if (v.lunge < 0.02) v.lunge = 0;
 
     v.prevX = p.x;
     v.prevY = p.y;
@@ -356,8 +421,12 @@ function update() {
   checkRebound();
   updateEffects();
   updateVisuals();
+  updateCamera();
 }
 
+// Screen-space only: always full-bleed regardless of camera pan/zoom. This
+// is the single environment layer for this pass (crowd) — fence and
+// stadium-light glow were dropped rather than stacked, per direction.
 function drawBackground() {
   const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
   grad.addColorStop(0, "#1b1f24");
@@ -365,28 +434,41 @@ function drawBackground() {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  for (const lx of [80, canvas.width - 80]) {
-    const glow = ctx.createRadialGradient(lx, 20, 5, lx, 20, 160);
-    glow.addColorStop(0, "rgba(255, 244, 200, 0.22)");
-    glow.addColorStop(1, "rgba(255, 244, 200, 0)");
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }
-
   ctx.fillStyle = "#05060a";
   for (let x = 0; x < canvas.width; x += 14) {
-    const h1 = 12 + Math.sin(x * 0.7) * 4;
+    const h1 = 14 + Math.sin(x * 0.7) * 5;
     ctx.fillRect(x, 0, 10, h1);
-    const h2 = 12 + Math.cos(x * 0.5) * 4;
+    const h2 = 14 + Math.cos(x * 0.5) * 5;
     ctx.fillRect(x, canvas.height - h2, 10, h2);
   }
+}
 
-  ctx.save();
-  ctx.setLineDash([6, 6]);
-  ctx.strokeStyle = "rgba(200, 200, 200, 0.35)";
+function drawHoop(hoopX, facing) {
+  // facing: +1 rim opens toward +x (left hoop), -1 opens toward -x (right hoop)
+  const backboardX = hoopX - facing * 18;
+  ctx.fillStyle = "rgba(230, 230, 235, 0.85)";
+  ctx.strokeStyle = "#9ca3af";
   ctx.lineWidth = 2;
-  ctx.strokeRect(30, 30, canvas.width - 60, canvas.height - 60);
-  ctx.restore();
+  ctx.fillRect(backboardX - 4, 258, 8, 84);
+  ctx.strokeRect(backboardX - 4, 258, 8, 84);
+  ctx.strokeStyle = "#d1d5db";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(backboardX - 2, 280, 4, 30);
+
+  ctx.beginPath();
+  ctx.ellipse(hoopX, 300, 16, 6, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = "#f97316";
+  ctx.lineWidth = 4;
+  ctx.stroke();
+
+  ctx.strokeStyle = "rgba(230, 230, 235, 0.55)";
+  ctx.lineWidth = 1;
+  for (let i = -2; i <= 2; i++) {
+    ctx.beginPath();
+    ctx.moveTo(hoopX + i * 6, 303);
+    ctx.lineTo(hoopX + i * 3 + facing * 10, 322);
+    ctx.stroke();
+  }
 }
 
 function drawCourt() {
@@ -417,15 +499,11 @@ function drawCourt() {
   ctx.arc(820, 300, 210, Math.PI - 1.0, Math.PI + 1.0);
   ctx.stroke();
 
-  ctx.beginPath();
-  ctx.arc(HOOP_LEFT.x, HOOP_LEFT.y, 6, 0, Math.PI * 2);
-  ctx.arc(HOOP_RIGHT.x, HOOP_RIGHT.y, 6, 0, Math.PI * 2);
-  ctx.strokeStyle = "#facc15";
-  ctx.lineWidth = 3;
-  ctx.stroke();
+  drawHoop(HOOP_LEFT.x, 1);
+  drawHoop(HOOP_RIGHT.x, -1);
 }
 
-function drawShadow(x, y, r = 11) {
+function drawShadow(x, y, r = 20) {
   ctx.beginPath();
   ctx.ellipse(x, y + r * 0.9, r, r * 0.4, 0, 0, Math.PI * 2);
   ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
@@ -459,48 +537,67 @@ function playerFillColor(p) {
 
 function drawPlayer(p) {
   const v = p.visual;
-  const stretch = 1 / v.squash;
+  // Steal lunge/contact/recovery is one decaying scalar (v.lunge) layered
+  // on top of the normal movement squash-stretch: an extra forward stretch
+  // and downward squash while high, easing back to the normal pose as it
+  // decays — that easing back IS the recovery, no separate state needed.
+  const stretch = (1 / v.squash) * (1 + v.lunge * 0.4);
+  const squash = v.squash * (1 - v.lunge * 0.3);
   const isA = p.team === "A";
   const fill = playerFillColor(p);
   const outline = isA ? "#1e3a8a" : "#7f1d1d";
   const drawY = p.y - v.bob;
+  const BODY_RX = 22;
+  const BODY_RY = 18;
+  const HEAD_R = 10;
 
   ctx.save();
   ctx.translate(p.x, drawY);
   ctx.rotate(v.angle);
-  ctx.scale(stretch, v.squash);
+  ctx.scale(stretch, squash);
   ctx.beginPath();
-  ctx.ellipse(0, 0, 11, 9, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, 0, BODY_RX, BODY_RY, 0, 0, Math.PI * 2);
   ctx.fillStyle = fill;
   ctx.fill();
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 3;
   ctx.strokeStyle = outline;
   ctx.stroke();
+
+  // facing nose: a small chevron pointing the way this player last moved,
+  // for at-a-glance orientation readability
+  ctx.beginPath();
+  ctx.moveTo(BODY_RX - 2, -6);
+  ctx.lineTo(BODY_RX + 8, 0);
+  ctx.lineTo(BODY_RX - 2, 6);
+  ctx.closePath();
+  ctx.fillStyle = outline;
+  ctx.fill();
   ctx.restore();
 
   ctx.beginPath();
-  ctx.arc(p.x, drawY - 11, 5, 0, Math.PI * 2);
+  ctx.arc(p.x, drawY - BODY_RY - 4, HEAD_R, 0, Math.PI * 2);
   ctx.fillStyle = fill;
   ctx.fill();
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 2.5;
   ctx.strokeStyle = outline;
   ctx.stroke();
 }
 
 function drawBall() {
   const ball = state.ball;
+  const r = 6 + ballPop * 4; // drawn-radius bump only; ball.x/y/vx/vy are untouched
   ctx.beginPath();
-  ctx.arc(ball.x, ball.y, 6, 0, Math.PI * 2);
+  ctx.arc(ball.x, ball.y, r, 0, Math.PI * 2);
   ctx.fillStyle = "#f97316";
   ctx.fill();
   ctx.strokeStyle = "#7c2d12";
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(ball.x - 6, ball.y);
-  ctx.lineTo(ball.x + 6, ball.y);
-  ctx.moveTo(ball.x, ball.y - 6);
-  ctx.lineTo(ball.x, ball.y + 6);
+  ctx.moveTo(ball.x - r, ball.y);
+  ctx.lineTo(ball.x + r, ball.y);
+  ctx.moveTo(ball.x, ball.y - r);
+  ctx.lineTo(ball.x, ball.y + r);
   ctx.stroke();
 }
 
@@ -526,31 +623,94 @@ function drawEffects() {
 }
 
 function drawScoreboard() {
-  ctx.fillStyle = "white";
-  ctx.font = "24px sans-serif";
+  const panelW = 260;
+  const panelH = 64;
+  const x = canvas.width / 2 - panelW / 2;
+  const y = 16;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(10, 12, 16, 0.82)";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+  ctx.lineWidth = 2;
+  if (ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, panelW, panelH, 10);
+    ctx.fill();
+    ctx.stroke();
+  } else {
+    ctx.fillRect(x, y, panelW, panelH);
+    ctx.strokeRect(x, y, panelW, panelH);
+  }
+
   ctx.textAlign = "center";
-  ctx.fillText(`${state.score.A} - ${state.score.B}`, canvas.width / 2, 35);
+  ctx.font = "bold 30px sans-serif";
+  ctx.fillStyle = "#60a5fa";
+  ctx.fillText(String(state.score.A), x + panelW * 0.28, y + panelH * 0.68);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+  ctx.font = "20px sans-serif";
+  ctx.fillText("-", x + panelW * 0.5, y + panelH * 0.64);
+  ctx.fillStyle = "#f87171";
+  ctx.font = "bold 30px sans-serif";
+  ctx.fillText(String(state.score.B), x + panelW * 0.72, y + panelH * 0.68);
+
+  ctx.font = "11px sans-serif";
+  ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+  ctx.fillText("HOME", x + panelW * 0.28, y + panelH * 0.28);
+  ctx.fillText("AWAY", x + panelW * 0.72, y + panelH * 0.28);
+  ctx.restore();
 }
 
 function drawWinBanner() {
-  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+  const teamColor = state.winner === "A" ? "#60a5fa" : "#f87171";
+
+  ctx.fillStyle = "rgba(0, 0, 0, 0.78)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "gold";
-  ctx.font = "48px sans-serif";
+
+  const bannerW = Math.min(560, canvas.width * 0.8);
+  const bannerH = 170;
+  const bx = canvas.width / 2 - bannerW / 2;
+  const by = canvas.height / 2 - bannerH / 2;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(20, 22, 28, 0.92)";
+  ctx.strokeStyle = teamColor;
+  ctx.lineWidth = 4;
+  if (ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bannerW, bannerH, 16);
+    ctx.fill();
+    ctx.stroke();
+  } else {
+    ctx.fillRect(bx, by, bannerW, bannerH);
+    ctx.strokeRect(bx, by, bannerW, bannerH);
+  }
+
   ctx.textAlign = "center";
-  ctx.fillText(`TEAM ${state.winner} WINS`, canvas.width / 2, canvas.height / 2);
+  ctx.fillStyle = teamColor;
+  ctx.font = "bold 52px sans-serif";
+  ctx.fillText(`TEAM ${state.winner} WINS`, canvas.width / 2, canvas.height / 2 - 10);
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.font = "24px sans-serif";
+  ctx.fillText(`${state.score.A} - ${state.score.B}`, canvas.width / 2, canvas.height / 2 + 40);
+  ctx.restore();
 }
 
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawBackground();
 
+  const cam = getCameraTransform();
   ctx.save();
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.scale(cam.scale, cam.scale);
+  ctx.translate(-cam.x, -cam.y);
+
   ctx.translate(zoomFocusX, zoomFocusY);
   ctx.scale(zoom, zoom);
   ctx.translate(-zoomFocusX, -zoomFocusY);
   ctx.translate((Math.random() - 0.5) * shakeMagnitude, (Math.random() - 0.5) * shakeMagnitude);
 
-  drawBackground();
   drawCourt();
   drawBallTrail();
 
