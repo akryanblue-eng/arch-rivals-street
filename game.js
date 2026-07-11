@@ -6,10 +6,10 @@ const HOOP_RIGHT = { x: 820, y: 300 };
 
 const state = {
   players: [
-    { id: "A1", x: 200, y: 300, vx: 0, vy: 0, team: "A", pressure: 0 },
-    { id: "A2", x: 250, y: 350, vx: 0, vy: 0, team: "A", pressure: 0 },
-    { id: "B1", x: 700, y: 300, vx: 0, vy: 0, team: "B", pressure: 0 },
-    { id: "B2", x: 650, y: 350, vx: 0, vy: 0, team: "B", pressure: 0 }
+    { id: "A1", x: 200, y: 300, vx: 0, vy: 0, team: "A", pressure: 0, visual: makeVisual(200, 300) },
+    { id: "A2", x: 250, y: 350, vx: 0, vy: 0, team: "A", pressure: 0, visual: makeVisual(250, 350) },
+    { id: "B1", x: 700, y: 300, vx: 0, vy: 0, team: "B", pressure: 0, visual: makeVisual(700, 300) },
+    { id: "B2", x: 650, y: 350, vx: 0, vy: 0, team: "B", pressure: 0, visual: makeVisual(650, 350) }
   ],
   ball: { x: 300, y: 300, vx: 0, vy: 0, owner: null, shotClock: 0, inAir: false },
   score: { A: 0, B: 0 },
@@ -24,10 +24,17 @@ const keys = {};
 window.addEventListener("keydown", e => keys[e.key] = true);
 window.addEventListener("keyup", e => keys[e.key] = false);
 
-// Cosmetic-only presentation state: ball trail, transient effects (impact
-// flash, score popups), screen shake, and camera zoom. None of this feeds
-// back into game logic, so it can use randomness freely without touching
-// the deterministic simulation above.
+// Cosmetic-only presentation state: per-player visual, ball trail, transient
+// effects (impact flash, score popups), screen shake, and camera zoom. This
+// entire layer is read-only with respect to game logic: it observes
+// state.players / state.ball / state.score each frame and never writes back
+// into anything gameplay code reads (position, possession, pressure,
+// aiState, score). Animation timing must never become an input to steals,
+// movement, scoring, or possession.
+function makeVisual(x, y) {
+  return { squash: 1, angle: 0, facing: 1, bob: 0, bobPhase: 0, flash: 0, prevX: x, prevY: y };
+}
+
 const ballTrail = [];
 const effects = [];
 let shakeMagnitude = 0;
@@ -220,6 +227,7 @@ function evaluateStealState(defender, carrier) {
   state.ball.vx = (dx / dist) * 3;
   state.ball.vy = (dy / dist) * 3;
   defender.pressure = 0;
+  defender.visual.flash = 1;
   spawnFlash(defender.x, defender.y);
   triggerShake(2.5);
 }
@@ -235,17 +243,9 @@ function moveToward(player, tx, ty, standoff = 0) {
   const dx = tx - player.x;
   const dy = ty - player.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist <= standoff) {
-    player.vx = 0;
-    player.vy = 0;
-    return;
-  }
-  const stepX = (dx / dist) * AI_SPEED;
-  const stepY = (dy / dist) * AI_SPEED;
-  player.x += stepX;
-  player.y += stepY;
-  player.vx = stepX;
-  player.vy = stepY;
+  if (dist <= standoff) return;
+  player.x += (dx / dist) * AI_SPEED;
+  player.y += (dy / dist) * AI_SPEED;
 }
 
 function attackHoopFor(team) {
@@ -304,19 +304,41 @@ function updateEffects() {
   if (ballTrail.length > 10) ballTrail.shift();
 }
 
+// Derives every player's animation state from the position change that
+// already happened this frame (state.players[i].x/y, set by the gameplay
+// code above). Reads simulation state; writes only to player.visual.
+// Nothing in gameplay logic ever reads player.visual back.
+function updateVisuals() {
+  for (const p of state.players) {
+    const v = p.visual;
+    const dx = p.x - v.prevX;
+    const dy = p.y - v.prevY;
+    const moveSpeed = Math.sqrt(dx * dx + dy * dy);
+
+    if (moveSpeed > 0.05) {
+      v.angle = Math.atan2(dy, dx);
+      v.facing = dx >= 0 ? 1 : -1;
+    }
+    v.squash = 1 / (1 + Math.min(moveSpeed / 3, 1) * 0.25);
+
+    v.bobPhase += moveSpeed > 0.1 ? 0.35 : 0.12;
+    v.bob = Math.sin(v.bobPhase) * (moveSpeed > 0.1 ? 2.2 : 1);
+
+    v.flash *= 0.85;
+    if (v.flash < 0.02) v.flash = 0;
+
+    v.prevX = p.x;
+    v.prevY = p.y;
+  }
+}
+
 function update() {
   const p = state.players[0];
   const speed = 2;
-  let dx = 0;
-  let dy = 0;
-  if (keys["ArrowUp"]) dy -= speed;
-  if (keys["ArrowDown"]) dy += speed;
-  if (keys["ArrowLeft"]) dx -= speed;
-  if (keys["ArrowRight"]) dx += speed;
-  p.x += dx;
-  p.y += dy;
-  p.vx = dx;
-  p.vy = dy;
+  if (keys["ArrowUp"]) p.y -= speed;
+  if (keys["ArrowDown"]) p.y += speed;
+  if (keys["ArrowLeft"]) p.x -= speed;
+  if (keys["ArrowRight"]) p.x += speed;
   clampToCourt(p);
 
   if (keys[" "]) shoot(p);
@@ -333,6 +355,7 @@ function update() {
   checkScore();
   checkRebound();
   updateEffects();
+  updateVisuals();
 }
 
 function drawBackground() {
@@ -423,19 +446,29 @@ function drawBallTrail() {
   }
 }
 
-function drawPlayer(p) {
-  const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
-  const stretch = 1 + Math.min(speed / 3, 1) * 0.25;
-  const squash = 1 / stretch;
-  const angle = speed > 0.05 ? Math.atan2(p.vy, p.vx) : 0;
+function playerFillColor(p) {
   const isA = p.team === "A";
-  const fill = isA ? "#3b82f6" : "#ef4444";
+  const base = isA ? [59, 130, 246] : [239, 68, 68];
+  const t = p.visual.flash;
+  if (t <= 0) return isA ? "#3b82f6" : "#ef4444";
+  const r = Math.round(base[0] + (255 - base[0]) * t);
+  const g = Math.round(base[1] + (255 - base[1]) * t);
+  const b = Math.round(base[2] + (255 - base[2]) * t);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+function drawPlayer(p) {
+  const v = p.visual;
+  const stretch = 1 / v.squash;
+  const isA = p.team === "A";
+  const fill = playerFillColor(p);
   const outline = isA ? "#1e3a8a" : "#7f1d1d";
+  const drawY = p.y - v.bob;
 
   ctx.save();
-  ctx.translate(p.x, p.y);
-  ctx.rotate(angle);
-  ctx.scale(stretch, squash);
+  ctx.translate(p.x, drawY);
+  ctx.rotate(v.angle);
+  ctx.scale(stretch, v.squash);
   ctx.beginPath();
   ctx.ellipse(0, 0, 11, 9, 0, 0, Math.PI * 2);
   ctx.fillStyle = fill;
@@ -446,7 +479,7 @@ function drawPlayer(p) {
   ctx.restore();
 
   ctx.beginPath();
-  ctx.arc(p.x, p.y - 11, 5, 0, Math.PI * 2);
+  ctx.arc(p.x, drawY - 11, 5, 0, Math.PI * 2);
   ctx.fillStyle = fill;
   ctx.fill();
   ctx.lineWidth = 1.5;
