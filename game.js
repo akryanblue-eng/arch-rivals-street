@@ -18,7 +18,12 @@ const state = {
     { id: "B1", x: 700, y: 300, vx: 0, vy: 0, team: "B", pressure: 0, visual: makeVisual(700, 300) },
     { id: "B2", x: 650, y: 350, vx: 0, vy: 0, team: "B", pressure: 0, visual: makeVisual(650, 350) }
   ],
-  ball: { x: 300, y: 300, vx: 0, vy: 0, owner: null, shotClock: 0, inAir: false },
+  // Center court (450,300), matching resetAfterScore()'s tip-off spot: player
+  // start positions are symmetric around this point (A1/B1 200 vs 250 from
+  // center, A2/B2 200 vs 250), but the ball previously spawned at x=300 —
+  // only 100 units from team A's starting pair and 350+ from team B's,
+  // handing team A first possession before any gameplay logic even runs.
+  ball: { x: 450, y: 300, vx: 0, vy: 0, owner: null, shotClock: 0, shotClockOwner: null, inAir: false },
   score: { A: 0, B: 0 },
   gameOver: false,
   winner: null
@@ -152,13 +157,38 @@ function spawnPopup(x, y, text, color) {
   effects.push({ type: "popup", x, y, text, color, ttl: 40, maxTtl: 40 });
 }
 
-function tryGainPossession(player) {
+// Closest-player-wins, not first-in-array-wins: state.players is always
+// ordered [A1, A2, B1, B2], so iterating in place and taking the first
+// match in range silently favored team A in every loose-ball contest
+// regardless of who was actually closest. Confirmed via instrumented
+// playthrough: a rebound where B1 stood at distance 0 on the ball still
+// lost possession to A2 at distance 19.5, purely from array order.
+function tryGainPossession() {
   if (state.ball.owner) return;
-  const dx = player.x - state.ball.x;
-  const dy = player.y - state.ball.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist < 15) {
-    state.ball.owner = player.id;
+  // A ball in flight can't be "gained" by proximity: shoot() clears owner
+  // and sets inAir in the same frame that ball.x/y still holds the
+  // shooter's own last position (updateBall() hasn't moved it yet this
+  // frame), so without this check the shooter was immediately re-awarded
+  // the ball at distance 0 before the shot ever visibly left their hands —
+  // turning every shot attempt into a same-frame no-op, and leaving owner
+  // and inAir both set at once, which let checkScore fire off the stale
+  // inAir flag using the re-synced carrier position as a fake "make" with
+  // no real shot ever having flown. A flighted ball must land (updateBall
+  // clearing inAir) before anyone, including the shooter, can pick it up.
+  if (state.ball.inAir) return;
+  let closest = null;
+  let closestDist = 15;
+  for (const player of state.players) {
+    const dx = player.x - state.ball.x;
+    const dy = player.y - state.ball.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < closestDist) {
+      closest = player;
+      closestDist = dist;
+    }
+  }
+  if (closest) {
+    state.ball.owner = closest.id;
   }
 }
 
@@ -166,7 +196,13 @@ function shoot(player) {
   if (state.ball.owner !== player.id) return;
   state.ball.owner = null;
   state.ball.inAir = true;
-  const hoop = player.x < 450 ? HOOP_RIGHT : HOOP_LEFT;
+  // Target by team, not by which half of the court the shooter is
+  // currently standing on: attackHoopFor(player.team) is exactly what
+  // runDefenderAI already uses to decide *whether* a player is close enough
+  // to shoot, so using anything else here to decide *where* to aim can
+  // disagree with it — and does, every time a player has crossed midcourt
+  // on the way to their own hoop (i.e. every real scoring position).
+  const hoop = attackHoopFor(player.team);
   const dx = hoop.x - player.x;
   const dy = hoop.y - player.y;
   const power = 0.08;
@@ -202,16 +238,22 @@ function updateBall() {
   ball.y = Math.max(50, Math.min(550, ball.y));
 }
 
+// Same closest-wins fix as tryGainPossession, same reason.
 function checkRebound() {
   if (state.ball.inAir) return;
+  let closest = null;
+  let closestDist = 20;
   for (const p of state.players) {
     const dx = p.x - state.ball.x;
     const dy = p.y - state.ball.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < 20) {
-      state.ball.owner = p.id;
-      return;
+    if (dist < closestDist) {
+      closest = p;
+      closestDist = dist;
     }
+  }
+  if (closest) {
+    state.ball.owner = closest.id;
   }
 }
 
@@ -280,6 +322,39 @@ const BASE_PRESSURE = 1;
 const STEAL_THRESHOLD = 45; // accumulated pressure required to force a turnover
 const DEBUG_STEALS = false; // flip on to audit pressure/threshold at each turnover
 
+// Shot clock: a hard cap on any single, uninterrupted possession. Backstops
+// every other possession mechanic (ties, near-ties, a stationary carrier, or
+// any future edge case that lets a possession go stagnant) by guaranteeing
+// forward progress — the carrier is forced to shoot rather than the game
+// stalling indefinitely. 400 frames is roughly double the time a full drive
+// from mid-court to shooting range takes at AI_SPEED, so it never cuts off
+// a genuine possession, only a stuck one.
+const SHOT_CLOCK_LIMIT = 400;
+
+// Tracks whether the same player has held the ball continuously since the
+// last time it was loose, incrementing state.ball.shotClock accordingly and
+// forcing a shot once the limit is hit. Runs after steal/rebound resolution
+// each frame so it sees the settled owner, not a mid-frame flicker.
+function updateShotClock() {
+  const ball = state.ball;
+  if (!ball.owner) {
+    ball.shotClock = 0;
+    ball.shotClockOwner = null;
+    return;
+  }
+  if (ball.owner !== ball.shotClockOwner) {
+    ball.shotClockOwner = ball.owner;
+    ball.shotClock = 0;
+  }
+  ball.shotClock++;
+  if (ball.shotClock >= SHOT_CLOCK_LIMIT) {
+    const carrier = state.players.find(pl => pl.id === ball.owner);
+    ball.shotClock = 0;
+    ball.shotClockOwner = null;
+    shoot(carrier);
+  }
+}
+
 function calculateDefenderPressure(defender, carrier) {
   const dx = carrier.x - defender.x;
   const dy = carrier.y - defender.y;
@@ -317,6 +392,21 @@ function evaluateStealState(defender, carrier) {
   const dy = carrier.y - defender.y;
   const dist = Math.sqrt(dx * dx + dy * dy) || 1;
   state.ball.owner = null;
+  // Placed 55% of the way toward the defender rather than at the exact
+  // midpoint: tryGainPossession() (which runs later this same frame) picks
+  // the closest player, and an exact midpoint is an exact tie in distance
+  // whenever the carrier is stationary (e.g. an idle human) and the
+  // defender sits at GUARD_STANDOFF — ties fall back to array order, which
+  // always favors the earlier-indexed player, silently handing the ball
+  // right back to the carrier every single time regardless of distance.
+  // Biasing the split guarantees the defender is strictly closest no matter
+  // the carrier/defender separation, while still routing through the normal
+  // loose-ball pickup scan (rather than assigning possession outright),
+  // which is what leaves room for a trailing teammate to occasionally
+  // intercept the loose ball — that leak is what keeps drives contestable
+  // instead of turning every threshold-crossing into a guaranteed turnover.
+  state.ball.x = carrier.x + (defender.x - carrier.x) * 0.55;
+  state.ball.y = carrier.y + (defender.y - carrier.y) * 0.55;
   state.ball.vx = (dx / dist) * 3;
   state.ball.vy = (dy / dist) * 3;
   defender.pressure = 0;
@@ -453,13 +543,12 @@ function update() {
     runDefenderAI(state.players[i]);
   }
 
-  for (const pl of state.players) {
-    tryGainPossession(pl);
-  }
+  tryGainPossession();
 
   updateBall();
   checkScore();
   checkRebound();
+  updateShotClock();
   updateEffects();
   updateVisuals();
   updateCamera();
