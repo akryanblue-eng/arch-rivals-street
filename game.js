@@ -95,9 +95,24 @@ const CAMERA_ZOOM = 1.55;
 let cameraX = 450;
 let cameraY = 300;
 
+// Vertical dead zone: as long as the ball stays within CAMERA_DEADZONE_Y of
+// center court, the camera holds steady at y=300 instead of chasing every
+// small vertical wiggle. Only once the ball crosses that band does the
+// camera start easing to follow — keeping the ball at the edge of the
+// zone, not centered on it — so normal possession play doesn't turn the
+// camera into a nervous drone operator.
+const CAMERA_DEADZONE_Y = 50;
+
 function updateCamera() {
   cameraX += (state.ball.x - cameraX) * 0.06;
-  cameraY += (300 - cameraY) * 0.06;
+
+  let targetY = 300;
+  if (state.ball.y > 300 + CAMERA_DEADZONE_Y) {
+    targetY = state.ball.y - CAMERA_DEADZONE_Y;
+  } else if (state.ball.y < 300 - CAMERA_DEADZONE_Y) {
+    targetY = state.ball.y + CAMERA_DEADZONE_Y;
+  }
+  cameraY += (targetY - cameraY) * 0.06;
 }
 
 function getCameraTransform() {
