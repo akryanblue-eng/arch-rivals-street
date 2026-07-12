@@ -498,7 +498,101 @@ function drawHoop(hoopX, facing) {
   }
 }
 
+// Deterministic pseudo-noise (no Math.random) so the speckle pattern is
+// stable frame-to-frame instead of flickering under the 60fps redraw.
+function hashSpeck(x, y) {
+  const n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+function drawAsphaltTexture() {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(50, 50, 800, 500);
+  ctx.clip();
+  for (let x = 50; x < 850; x += 18) {
+    for (let y = 50; y < 550; y += 18) {
+      const speck = hashSpeck(x, y);
+      if (speck > 0.86) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${(0.03 + speck * 0.03).toFixed(3)})`;
+        ctx.fillRect(x, y, 3, 3);
+      } else if (speck < 0.07) {
+        ctx.fillStyle = `rgba(0, 0, 0, ${(0.08 + speck).toFixed(3)})`;
+        ctx.fillRect(x, y, 4, 4);
+      }
+    }
+  }
+  ctx.restore();
+}
+
+// Night-game stadium lights: two glow pools hanging above the court,
+// pooling down over each hoop. World-space so they pan/zoom with the
+// camera like a real light rig would, instead of staying screen-fixed.
+function drawCourtLighting() {
+  // The camera's vertical band is fixed at a ~254-unit window centered on
+  // y=300 (updateCamera never follows the ball vertically) — even the
+  // court's own y=50/550 edges sit outside that band. So this reads as a
+  // warm pool centered right on the hoop (y=300), not a rig hanging above
+  // the court, since "above" is never actually reachable by this camera.
+  for (const lx of [HOOP_LEFT.x - 30, HOOP_RIGHT.x + 30]) {
+    const glow = ctx.createRadialGradient(lx, 300, 20, lx, 300, 200);
+    glow.addColorStop(0, "rgba(255, 244, 200, 0.22)");
+    glow.addColorStop(1, "rgba(255, 244, 200, 0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(lx - 200, 100, 400, 400);
+  }
+}
+
+function drawChainLinkFence() {
+  const outer = { x: 20, y: 20, w: 860, h: 560 };
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(outer.x, outer.y, outer.w, outer.h);
+  ctx.rect(50, 50, 800, 500);
+  ctx.clip("evenodd");
+
+  ctx.strokeStyle = "rgba(200, 210, 220, 0.35)";
+  ctx.lineWidth = 1;
+  const step = 14;
+  const span = outer.w + outer.h;
+  for (let x = outer.x - outer.h; x < outer.x + span; x += step) {
+    ctx.beginPath();
+    ctx.moveTo(x, outer.y);
+    ctx.lineTo(x + outer.h, outer.y + outer.h);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, outer.y + outer.h);
+    ctx.lineTo(x + outer.h, outer.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  ctx.strokeStyle = "rgba(150, 160, 170, 0.5)";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(outer.x, outer.y, outer.w, outer.h);
+}
+
+// Neighborhood branding, painted vertically along the fence. Placed here
+// rather than below the court: the camera only ever follows the ball
+// horizontally (updateCamera holds y at a fixed 300), so anything placed
+// far below/above the court's y-band would never actually scroll into
+// view during real play. This position sits within the horizontal pan's
+// reach on either side.
+function drawGraffiti() {
+  ctx.save();
+  ctx.translate(34, 300);
+  ctx.rotate(-Math.PI / 2);
+  ctx.font = "italic bold 30px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(250, 204, 21, 0.25)";
+  ctx.fillText("ARCH RIVALS STREET", 0, 0);
+  ctx.restore();
+}
+
 function drawCourt() {
+  drawAsphaltTexture();
+  drawCourtLighting();
+
   ctx.fillStyle = "rgba(59, 130, 246, 0.12)";
   ctx.fillRect(50, 220, 130, 160);
   ctx.fillStyle = "rgba(239, 68, 68, 0.12)";
@@ -528,6 +622,9 @@ function drawCourt() {
 
   drawHoop(HOOP_LEFT.x, 1);
   drawHoop(HOOP_RIGHT.x, -1);
+
+  drawChainLinkFence();
+  drawGraffiti();
 }
 
 function drawShadow(x, y, r = 20) {
