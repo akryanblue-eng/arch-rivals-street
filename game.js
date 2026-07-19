@@ -329,6 +329,26 @@ function defendedHoopFor(team) {
   return team === "A" ? HOOP_LEFT : HOOP_RIGHT;
 }
 
+// Closed-form landing point for a ball in flight, mirroring updateBall()'s
+// integration exactly (x += vx; y += vy; vy += 0.05; lands when y > 550).
+// Chasing a rebound means racing to where the ball WILL come down — tracking
+// its current mid-air position always arrives late, which is why AI crashers
+// lost every deep-rebound race to a player who aims at the landing spot.
+function predictBallLanding() {
+  const ball = state.ball;
+  if (!ball.inAir) return { x: ball.x, y: ball.y };
+  // Solve y + t*vy + 0.05*t*(t-1)/2 >= 550 for the smallest t >= 0.
+  const a = 0.025;
+  const b = ball.vy - 0.025;
+  const c = ball.y - 550;
+  const disc = b * b - 4 * a * c;
+  const t = disc <= 0 ? 0 : Math.max(0, (-b + Math.sqrt(disc)) / (2 * a));
+  return {
+    x: Math.max(50, Math.min(850, ball.x + ball.vx * t)),
+    y: 550
+  };
+}
+
 // Human-parity pursuit speed. At 1.6 vs the human's 2.0, a defender could
 // never hold the 60-unit pressure radius against a moving carrier and lost
 // every loose-ball race: across three instrumented human-driven matches,
@@ -486,9 +506,13 @@ function runDefenderAI(player) {
   }
 
   switch (player.aiState) {
-    case AI_STATE.CHASE_BALL:
-      moveToward(player, state.ball.x, state.ball.y);
+    case AI_STATE.CHASE_BALL: {
+      // For a grounded loose ball, go to it; for one in flight, race to
+      // where it will land instead of trailing its current position.
+      const target = predictBallLanding();
+      moveToward(player, target.x, target.y);
       break;
+    }
     case AI_STATE.GUARD_CARRIER: {
       const carrier = state.players.find(pl => pl.id === state.ball.owner);
       moveToward(player, carrier.x, carrier.y, GUARD_STANDOFF);
