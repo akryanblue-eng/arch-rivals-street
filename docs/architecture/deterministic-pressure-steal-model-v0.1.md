@@ -2,12 +2,23 @@
 
 ## Status
 
-**Accepted implementation record.**
+**Architecture record for a reviewed, unmerged implementation.**
 
-This document is a frozen checkpoint for the deterministic pressure-based steal model
-introduced in PR #3. It is an architectural record, not a design proposal. The
-implementation is live on `main`. Future iterations should treat this document as the
-established baseline.
+This document is the checkpoint for the deterministic pressure-based steal model
+implemented in PR #3 (branch `feature/deterministic-steal-pressure`, commit
+`8acfa2f`). It is an architectural record, not a design proposal.
+
+**The implementation is NOT yet live on `main`.** As of this revision, `main` still
+runs the original random `trySteal` (`Math.random() < 0.08`), and none of the
+functions or constants described below exist on `main`. Every implementation claim
+in this document is verified against the PR #3 branch, not against `main`. This
+record becomes the established baseline when PR #3 merges; until then, treat it as
+the frozen contract that the merge must satisfy.
+
+> Revision note (v0.1.1): the original version of this record incorrectly stated
+> the implementation was live on `main`. This revision corrects the status, the
+> lineage, the ball-ejection direction, and the frames-to-steal arithmetic, and
+> scopes all verification evidence to the branch where it was actually gathered.
 
 ---
 
@@ -20,15 +31,28 @@ established baseline.
     ↓
 82ce6f4  Deterministic AI state machine (PR #2)
     ↓
-e64e468  Scoring and win condition (PR #4)
+e64e468  Scoring and win condition (PR #4)        ← current main
     ↓
-PR #3    Deterministic pressure-based steal model  ← this document
+[pending] PR #3  Deterministic pressure-based steal model  ← this document
     ↓
          Future basketball intelligence systems
 ```
 
-All commits listed above are reachable from `main` in this repository. No external
-lineage is claimed.
+The four commits above the `[pending]` marker are reachable from `main`. PR #3
+(`feature/deterministic-steal-pressure`, commit `8acfa2f`) branched from `82ce6f4`
+— *before* PR #4 merged — and is not reachable from `main`. No external lineage is
+claimed.
+
+### Integration status
+
+PR #3 currently **conflicts with `main`** in `game.js` (verified with
+`git merge-tree`): both PR #3 and PR #4 modified the `GUARD_STANDOFF` line. The
+conflict is small but not mechanical — PR #4 lowered `GUARD_STANDOFF` from 20 to 12
+specifically because the random `trySteal` required defenders inside its 18 px
+window, while the pressure model builds pressure anywhere inside
+`PRESSURE_RADIUS` (60 px), which removes that constraint. The rebase of PR #3 onto
+current `main` must choose the standoff value deliberately against the pressure
+model's geometry, not just take either side of the conflict.
 
 ---
 
@@ -127,29 +151,39 @@ is stable regardless of their final values.
 **`calculateDefenderPressure(defender, carrier)`** — pure, no side effects
 
 ```
-proximity = (PRESSURE_RADIUS - dist) / PRESSURE_RADIUS   // 0..1
-laneAlignment = dot(hoop_direction, defender_direction) / normaliser  // -1..1
-laneBonus = max(0, laneAlignment)                         // 0..1
+proximity     = (PRESSURE_RADIUS - dist) / PRESSURE_RADIUS          // 0..1
+laneAlignment = dot(carrier→hoop, defender→carrier) / (|carrier→hoop| · |defender→carrier|)  // -1..1
+laneBonus     = max(0, laneAlignment)                                // 0..1
 return BASE_PRESSURE * proximity * (0.5 + 0.5 * laneBonus)
 ```
 
-A defender generates maximum pressure when it is close to the carrier **and**
-positioned between the carrier and the hoop the carrier is attacking. The two
-contributions are independently observable:
+The two contributions are independently observable:
 
 - `proximity`: how close is the defender?
-- `laneBonus`: is the defender blocking the passing lane to the hoop?
+- `laneBonus`: where is the defender relative to the carrier's attacking direction?
+
+**Intent vs. implementation (open discrepancy):** the design intent — stated in
+PR #3's description — is that the bonus rewards a defender positioned *between* the
+carrier and the hoop the carrier is attacking. The implemented dot product does the
+opposite: `defender→carrier` points *away* from the hoop when the defender is
+between carrier and hoop, making the alignment negative and the bonus `0`, while a
+defender trailing the carrier (carrier between defender and hoop) scores the full
+bonus. As implemented, chasing defenders build pressure up to 2× faster than
+lane-blocking defenders. See Known Limitations #2 — this must be resolved during
+the PR #3 rebase, either by flipping the sign or by revising the stated intent.
 
 **`updateAccumulatedPressure(defender, carrier)`** — accumulates per frame
 
-Adds the current frame's pressure to `defender.pressure`. This is the only write
-to defender state in the steal model.
+Adds the current frame's pressure to `defender.pressure`. This is the only place
+pressure *increases*; the only other writes to `defender.pressure` are the resets
+(on a successful steal, and on leaving `GUARD_CARRIER`).
 
 **`evaluateStealState(defender, carrier)`** — threshold check
 
 If `defender.pressure >= STEAL_THRESHOLD`, a turnover is forced. The ball ejects
-in the direction from carrier to defender (deterministic scatter, not random), and
-`defender.pressure` resets to `0`.
+along the defender→carrier line (velocity `(carrier − defender) / dist × 3`), i.e.
+knocked onward past the carrier, away from the defender — deterministic scatter,
+not random — and `defender.pressure` resets to `0`.
 
 ### Pressure Reset Rule
 
@@ -203,10 +237,14 @@ log. The per-frame `proximityPressure` and `laneBonus` are available by instrume
 
 ## Verification Evidence
 
+All checks below were run against the PR #3 branch
+(`feature/deterministic-steal-pressure`, commit `8acfa2f`). They do **not** hold on
+`main`, which still contains the random `trySteal` until PR #3 merges.
+
 | Check | Method | Result |
 |---|---|---|
 | Syntax | `node -c game.js` | Pass |
-| No randomness | `grep -n "Math.random" game.js` | Zero matches |
+| No randomness | `grep -n "Math.random" game.js` | Zero matches (on the PR #3 branch) |
 | Pressure accumulation | Headless Chromium simulation | Pressure climbs per frame, crosses threshold, forces turnover |
 | Threshold crossing | Headless simulation | Steal fires exactly when `pressure >= STEAL_THRESHOLD` |
 | Pressure reset | Headless simulation | `defender.pressure` returns to `0` on state transition |
@@ -226,19 +264,24 @@ The constants `PRESSURE_RADIUS`, `BASE_PRESSURE`, and `STEAL_THRESHOLD` determin
 how quickly pressure accumulates and how often steals occur. Their current values
 are a starting point, not a final balance judgment.
 
-Example at current values (60fps):
+Example at current values (60 fps). At 30 px, `proximity = (60 − 30) / 60 = 0.5`,
+so per-frame pressure is `0.5` with a full lane block (`0.5 + 0.5 × 1`) and `0.25`
+perpendicular (`0.5 + 0.5 × 0`):
 
 | Scenario | Frames to steal | Wall-clock time |
 |---|---|---|
-| 30 px away, full lane block | ~54 frames | ~0.9 s |
-| 30 px away, perpendicular | ~90 frames | ~1.5 s |
+| 30 px away, full lane block | 90 frames | ~1.5 s |
+| 30 px away, perpendicular | 180 frames | ~3.0 s |
 
-**2. Lane-bonus angle sensitivity**
+**2. Lane-bonus sign inversion (open defect)**
 
-The lane-denial bonus is a dot product and is sensitive to exact angle. A defender
-1° off the optimal blocking position generates significantly less bonus than one
-perfectly positioned. This reflects real defensive depth but may need smoothing if
-gameplay feedback identifies it as too punishing.
+As implemented, the lane bonus rewards a defender positioned *behind* the carrier
+relative to the attacking hoop, and gives zero bonus to a defender standing between
+the carrier and the hoop — the inverse of the stated design intent (see
+Implementation Contract → Core Functions). Determinism is unaffected, but the
+incentive gradient is backwards: chasing beats blocking. The PR #3 rebase must
+either flip the sign of the alignment term or explicitly adopt "pursuit pressure"
+as the intended semantics and rename the term.
 
 **3. Instant pressure reset**
 
