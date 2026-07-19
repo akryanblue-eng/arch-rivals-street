@@ -310,7 +310,12 @@ const AI_STATE = {
   ADVANCE_TO_HOOP: "ADVANCE_TO_HOOP" // own team has the ball: push toward the scoring hoop
 };
 
-const AI_SPEED = 1.6;
+// Human-parity pursuit speed. At 1.6 vs the human's 2.0, a defender could
+// never hold the 60-unit pressure radius against a moving carrier and lost
+// every loose-ball race: across three instrumented human-driven matches,
+// team B recorded 0 possession frames, 0 shots, and 0 steals. Defense must
+// be able to reach the play before any assignment logic can matter.
+const AI_SPEED = 2.0;
 const GUARD_STANDOFF = 20; // stop just outside steal range, close enough for pressure to build
 const AUTO_SHOOT_RANGE = 120;
 
