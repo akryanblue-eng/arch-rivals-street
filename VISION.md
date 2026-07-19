@@ -116,8 +116,10 @@ until the vertical slice passes the three-minute fun gate.
 
 ## Current near-term gate
 
-**Human playtest of the merged balance fixes (PR #19) in the browser build.**
-The playtest verdict decides the next branch: a clean result resumes the visual
-readability queue (character silhouettes → ball-at-hand → camera); a lopsided
-result makes defender-assignment AI the next target. No new direction work
-starts ahead of that verdict.
+**Defensive-containment validation following the lopsided PR #19 playtest.**
+First isolate pursuit-speed parity, then evaluate defender assignment and
+rebound-boxing behavior. The playtest verdict uncovered a sharper truth than
+the original decision tree: this is a defensive *reachability* problem first
+and an *assignment* problem second — defenders who cannot reach the play make
+every assignment scheme irrelevant. That ordering drives the implementation.
+No new direction work starts ahead of this validation.
