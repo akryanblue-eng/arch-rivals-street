@@ -467,7 +467,12 @@ function decideAiState(player) {
   if (ball.inAir) {
     // A shot is in flight. If it targets the hoop this player defends, take
     // rim position instead of ball-chasing; otherwise crash for the board.
-    const attackedHoop = ball.vx > 0 ? HOOP_RIGHT : HOOP_LEFT;
+    // vx === 0 is reachable (a shooter standing at exactly the hoop's x
+    // aims straight up), so fall back to which half the ball is in rather
+    // than letting the strict > silently classify that shot as left-bound.
+    const attackedHoop = ball.vx !== 0
+      ? (ball.vx > 0 ? HOOP_RIGHT : HOOP_LEFT)
+      : (ball.x >= 450 ? HOOP_RIGHT : HOOP_LEFT);
     return attackedHoop === defendedHoopFor(player.team)
       ? AI_STATE.BOX_REBOUND
       : AI_STATE.CHASE_BALL;
