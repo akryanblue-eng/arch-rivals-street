@@ -306,11 +306,55 @@ function clampToCourt(p) {
 // history — so behavior stays reproducible given the same state snapshot.
 const AI_STATE = {
   CHASE_BALL: "CHASE_BALL", // ball is loose: race to it
-  GUARD_CARRIER: "GUARD_CARRIER", // opposing team has the ball: close the gap and pressure for a steal
+  GUARD_CARRIER: "GUARD_CARRIER", // your marked opponent has the ball: close the gap and pressure for a steal
+  MARK_OPPONENT: "MARK_OPPONENT", // another opponent has the ball: deny your mark, goal-side
+  BOX_REBOUND: "BOX_REBOUND", // shot incoming at the hoop you defend: hold rim position goal-side of your mark
   ADVANCE_TO_HOOP: "ADVANCE_TO_HOOP" // own team has the ball: push toward the scoring hoop
 };
 
-const AI_SPEED = 1.6;
+// Static man-to-man assignments. Every player defends one specific opponent
+// instead of every defender converging on whoever holds the ball — the
+// convergence pattern is what produced both the two-player steal volley in
+// symmetric AI-vs-AI play and the permanently undefended off-ball attacker.
+// A1 is the human slot and the game loop never AI-drives it, but it still
+// gets an entry (its implicit man, B2) so the map is total: any mode that
+// does run AI for that slot — demos, tests, a future spectator sim — gets
+// a complete defense instead of a crash on an undefined mark.
+const DEFENSIVE_MARK = { A1: "B2", A2: "B1", B1: "A1", B2: "A2" };
+const MARK_STANDOFF = 30; // deny distance goal-side of the mark
+const BOX_DISTANCE = 50; // rim-position distance goal-side toward the mark
+
+function defendedHoopFor(team) {
+  // The hoop this team protects = the hoop the other team attacks.
+  return team === "A" ? HOOP_LEFT : HOOP_RIGHT;
+}
+
+// Closed-form landing point for a ball in flight, mirroring updateBall()'s
+// integration exactly (x += vx; y += vy; vy += 0.05; lands when y > 550).
+// Chasing a rebound means racing to where the ball WILL come down — tracking
+// its current mid-air position always arrives late, which is why AI crashers
+// lost every deep-rebound race to a player who aims at the landing spot.
+function predictBallLanding() {
+  const ball = state.ball;
+  if (!ball.inAir) return { x: ball.x, y: ball.y };
+  // Solve y + t*vy + 0.05*t*(t-1)/2 >= 550 for the smallest t >= 0.
+  const a = 0.025;
+  const b = ball.vy - 0.025;
+  const c = ball.y - 550;
+  const disc = b * b - 4 * a * c;
+  const t = disc <= 0 ? 0 : Math.max(0, (-b + Math.sqrt(disc)) / (2 * a));
+  return {
+    x: Math.max(50, Math.min(850, ball.x + ball.vx * t)),
+    y: 550
+  };
+}
+
+// Human-parity pursuit speed. At 1.6 vs the human's 2.0, a defender could
+// never hold the 60-unit pressure radius against a moving carrier and lost
+// every loose-ball race: across three instrumented human-driven matches,
+// team B recorded 0 possession frames, 0 shots, and 0 steals. Defense must
+// be able to reach the play before any assignment logic can matter.
+const AI_SPEED = 2.0;
 const GUARD_STANDOFF = 20; // stop just outside steal range, close enough for pressure to build
 const AUTO_SHOOT_RANGE = 120;
 
@@ -419,10 +463,29 @@ function evaluateStealState(defender, carrier) {
 }
 
 function decideAiState(player) {
-  const owner = state.ball.owner;
+  const ball = state.ball;
+  if (ball.inAir) {
+    // A shot is in flight. If it targets the hoop this player defends, take
+    // rim position instead of ball-chasing; otherwise crash for the board.
+    // vx === 0 is reachable (a shooter standing at exactly the hoop's x
+    // aims straight up), so fall back to which half the ball is in rather
+    // than letting the strict > silently classify that shot as left-bound.
+    const attackedHoop = ball.vx !== 0
+      ? (ball.vx > 0 ? HOOP_RIGHT : HOOP_LEFT)
+      : (ball.x >= 450 ? HOOP_RIGHT : HOOP_LEFT);
+    return attackedHoop === defendedHoopFor(player.team)
+      ? AI_STATE.BOX_REBOUND
+      : AI_STATE.CHASE_BALL;
+  }
+  const owner = ball.owner;
   if (!owner) return AI_STATE.CHASE_BALL;
   const carrier = state.players.find(pl => pl.id === owner);
-  return carrier.team === player.team ? AI_STATE.ADVANCE_TO_HOOP : AI_STATE.GUARD_CARRIER;
+  if (carrier.team === player.team) return AI_STATE.ADVANCE_TO_HOOP;
+  // Single coverage: only the defender assigned to the carrier pressures;
+  // everyone else denies their own mark instead of double-teaming the ball.
+  return DEFENSIVE_MARK[player.id] === carrier.id
+    ? AI_STATE.GUARD_CARRIER
+    : AI_STATE.MARK_OPPONENT;
 }
 
 function moveToward(player, tx, ty, standoff = 0) {
@@ -448,14 +511,40 @@ function runDefenderAI(player) {
   }
 
   switch (player.aiState) {
-    case AI_STATE.CHASE_BALL:
-      moveToward(player, state.ball.x, state.ball.y);
+    case AI_STATE.CHASE_BALL: {
+      // For a grounded loose ball, go to it; for one in flight, race to
+      // where it will land instead of trailing its current position.
+      const target = predictBallLanding();
+      moveToward(player, target.x, target.y);
       break;
+    }
     case AI_STATE.GUARD_CARRIER: {
       const carrier = state.players.find(pl => pl.id === state.ball.owner);
       moveToward(player, carrier.x, carrier.y, GUARD_STANDOFF);
       updateAccumulatedPressure(player, carrier);
       evaluateStealState(player, carrier);
+      break;
+    }
+    case AI_STATE.MARK_OPPONENT: {
+      // Deny position: hold a spot goal-side of your mark, so a turnover
+      // finds the mark already covered and the driving lane stays occupied.
+      const mark = state.players.find(pl => pl.id === DEFENSIVE_MARK[player.id]);
+      const hoop = defendedHoopFor(player.team);
+      const dx = hoop.x - mark.x;
+      const dy = hoop.y - mark.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 1;
+      moveToward(player, mark.x + (dx / d) * MARK_STANDOFF, mark.y + (dy / d) * MARK_STANDOFF);
+      break;
+    }
+    case AI_STATE.BOX_REBOUND: {
+      // Rim position goal-side: stand between your hoop and your mark so a
+      // miss drops with the defender already inside the crashing attacker.
+      const mark = state.players.find(pl => pl.id === DEFENSIVE_MARK[player.id]);
+      const hoop = defendedHoopFor(player.team);
+      const dx = mark.x - hoop.x;
+      const dy = mark.y - hoop.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 1;
+      moveToward(player, hoop.x + (dx / d) * BOX_DISTANCE, hoop.y + (dy / d) * BOX_DISTANCE);
       break;
     }
     case AI_STATE.ADVANCE_TO_HOOP: {
