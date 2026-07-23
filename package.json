@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "build": "tsc",
+    "compile": "tsc",
     "test": "tsc -p tsconfig.tests.json && node --test dist-tests/tests/showtime/neal-spin/NealSpinIntentParser.spec.js dist-tests/tests/showtime/neal-spin/NealSpinClassifier.spec.js dist-tests/tests/showtime/neal-spin/NealSpinTutorialController.spec.js"
   },
   "devDependencies": {
