@@ -226,3 +226,22 @@ test("fixture traces parse to their recorded expectations", () => {
     }
   }
 });
+
+test("effective arc excludes backtracking: 240 forward + 30 reverse is 240, not 270", () => {
+  const dims = parseAttempt(
+    makeTrace(10050, [...rep(24, { d: 10, dt: 16 }), ...rep(3, { d: -10, dt: 16 })]),
+    config,
+  );
+  assert.ok(Math.abs(dims.arcCoverageDeg - 240) < 0.01, `coverage ${dims.arcCoverageDeg}`);
+  assert.equal(dims.maxBacktrackDeg, 30);
+});
+
+test("a long sample gap containing real movement is motion, not hesitation", () => {
+  // 40° of motion, then one 600ms gap during which the angle advanced 45°:
+  // the player kept moving — the input stream just delivered late. No stop.
+  const dims = parseAttempt(
+    makeTrace(10050, [...rep(5, { d: 8, dt: 16 }), { d: 45, dt: 600 }, ...rep(5, { d: 8, dt: 16 })]),
+    config,
+  );
+  assert.equal(dims.hesitation.occurred, false);
+});

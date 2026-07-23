@@ -18,9 +18,12 @@
 //
 // The velocity gate honors calibration state (TechSpec Section 5):
 //   - calibration builds collect velocity but never gate on it;
-//   - production builds with an uncalibrated floor FAIL CLOSED — the gate
-//     cannot pass, and the telemetry's velocity_floor_state field makes the
-//     cause visible to analysts rather than burying it.
+//   - production builds with an uncalibrated floor FAIL CLOSED. Through the
+//     controller this branch is unreachable — assertConfigLaunchable refuses
+//     to construct an uncalibrated production config at initialization, so
+//     the defect surfaces against the build, not the player. The branch
+//     remains as defense in depth for callers that bypass the controller,
+//     and telemetry's velocity_floor_state keeps the cause visible.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.classifyAttempt = classifyAttempt;
 function velocityGate(dims, config, inputMethod) {

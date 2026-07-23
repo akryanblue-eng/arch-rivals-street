@@ -12,6 +12,7 @@ exports.buildIntentScoreEvent = buildIntentScoreEvent;
 exports.buildFailureEvent = buildFailureEvent;
 exports.buildSuccessEvent = buildSuccessEvent;
 exports.buildGhostOverlayShownEvent = buildGhostOverlayShownEvent;
+exports.buildGhostOverlayReadEvent = buildGhostOverlayReadEvent;
 exports.buildHesitationPromptShownEvent = buildHesitationPromptShownEvent;
 exports.buildHesitationRecoveryEvent = buildHesitationRecoveryEvent;
 exports.buildHesitationRecoveryOutcomeEvent = buildHesitationRecoveryOutcomeEvent;
@@ -67,6 +68,13 @@ function buildGhostOverlayShownEvent(args) {
         failure_class: args.failureClass,
         session_id: args.sessionId,
         attempt_number: args.attemptNumber,
+    };
+}
+function buildGhostOverlayReadEvent(args) {
+    return {
+        type: "Event_GhostOverlay_Read",
+        session_id: args.sessionId,
+        time_elapsed_before_retry_ms: args.timeElapsedBeforeRetryMs,
     };
 }
 function buildHesitationPromptShownEvent(args) {
@@ -158,6 +166,9 @@ function validateEvent(event) {
             if (event.failure_class !== "Fail_Timing_Early" && event.failure_class !== "Fail_Timing_Late") {
                 problems.push(`ghost overlay only exists for timing failures, got ${String(event.failure_class)}`);
             }
+            break;
+        case "Event_GhostOverlay_Read":
+            finite("time_elapsed_before_retry_ms", event.time_elapsed_before_retry_ms, problems);
             break;
         case "Event_Hesitation_Prompt_Shown":
             nonEmptyString("prompt_text", event.prompt_text, problems);

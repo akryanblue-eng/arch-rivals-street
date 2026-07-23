@@ -153,6 +153,15 @@ export interface EventGhostOverlayShown {
   attempt_number: number;
 }
 
+// Fired when the player begins a retry after a timing ghost was shown,
+// carrying how long the ghost had been on screen: did they pause to read it,
+// or blow straight past? Enables modality attribution on TTC (TechSpec 4.1).
+export interface EventGhostOverlayRead {
+  type: "Event_GhostOverlay_Read";
+  session_id: string;
+  time_elapsed_before_retry_ms: number;
+}
+
 export interface EventHesitationPromptShown {
   type: "Event_Hesitation_Prompt_Shown";
   session_id: string;
@@ -185,6 +194,7 @@ export type NealSpinTelemetryEvent =
   | EventFailureType
   | EventNealSpinSuccess
   | EventGhostOverlayShown
+  | EventGhostOverlayRead
   | EventHesitationPromptShown
   | EventHesitationRecovery
   | EventHesitationRecoveryOutcome
