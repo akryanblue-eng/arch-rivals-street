@@ -11,6 +11,7 @@ import {
   BuildMode,
   EventAbandonment,
   EventFailureType,
+  EventGhostOverlayRead,
   EventGhostOverlayShown,
   EventHesitationPromptShown,
   EventHesitationRecovery,
@@ -98,6 +99,17 @@ export function buildGhostOverlayShownEvent(args: {
     failure_class: args.failureClass,
     session_id: args.sessionId,
     attempt_number: args.attemptNumber,
+  };
+}
+
+export function buildGhostOverlayReadEvent(args: {
+  sessionId: string;
+  timeElapsedBeforeRetryMs: number;
+}): EventGhostOverlayRead {
+  return {
+    type: "Event_GhostOverlay_Read",
+    session_id: args.sessionId,
+    time_elapsed_before_retry_ms: args.timeElapsedBeforeRetryMs,
   };
 }
 
@@ -215,6 +227,9 @@ export function validateEvent(event: NealSpinTelemetryEvent): string[] {
       if (event.failure_class !== "Fail_Timing_Early" && event.failure_class !== "Fail_Timing_Late") {
         problems.push(`ghost overlay only exists for timing failures, got ${String(event.failure_class)}`);
       }
+      break;
+    case "Event_GhostOverlay_Read":
+      finite("time_elapsed_before_retry_ms", event.time_elapsed_before_retry_ms, problems);
       break;
     case "Event_Hesitation_Prompt_Shown":
       nonEmptyString("prompt_text", event.prompt_text, problems);

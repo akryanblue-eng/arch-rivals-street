@@ -47,7 +47,7 @@ function runAttempt(
   steps: Step[],
   endMs: number,
 ) {
-  controller.beginAttempt(context);
+  controller.beginAttempt(context, t0);
   for (const sample of makeTrace(t0, steps).samples) {
     controller.feedSample(sample);
   }
@@ -86,8 +86,8 @@ test("lifecycle misuse throws instead of double-terminating", () => {
   const { controller } = makeController();
   assert.throws(() => controller.endAttempt(0));
   assert.throws(() => controller.feedSample({ tMs: 0, x: 0, y: 0 }));
-  controller.beginAttempt(context);
-  assert.throws(() => controller.beginAttempt(context));
+  controller.beginAttempt(context, 10000);
+  assert.throws(() => controller.beginAttempt(context, 10001));
   controller.endAttempt(10600);
   assert.throws(() => controller.endAttempt(10600));
 });
@@ -96,7 +96,7 @@ test("no runtime path emits a generic NealSpin_Fail", () => {
   const { controller, sink } = makeController();
   runAttempt(controller, 9900, CLEAN_SPIN, 10600);
   runAttempt(controller, 10050, STALL, 10800);
-  controller.beginAttempt(context);
+  controller.beginAttempt(context, 10000);
   controller.menuExit(11000);
   for (const event of sink.events) {
     assert.ok(!JSON.stringify(event).includes("NealSpin_Fail"));
@@ -141,7 +141,7 @@ test("the ghost never remains visible during the active retry", () => {
   const { controller } = makeController();
   runAttempt(controller, 9900, CLEAN_SPIN, 10600);
   assert.equal(controller.ghostOverlay.getState(10700).phase, "holding");
-  controller.beginAttempt(context); // retry begins mid-hold
+  controller.beginAttempt(context, 10700); // retry begins mid-hold
   assert.equal(controller.ghostOverlay.getState(10750).phase, "hidden");
   controller.endAttempt(11200);
 });
@@ -179,7 +179,7 @@ test("recovery never fires from time alone: a stall that stays stalled has no re
 
 test("menu exit mid-attempt terminates the attempt as abandonment", () => {
   const { controller, sink } = makeController();
-  controller.beginAttempt(context);
+  controller.beginAttempt(context, 10000);
   controller.feedSample({ tMs: 10050, x: 500, y: 300 });
   const result = controller.menuExit(10100);
   assert.equal(result, "Fail_Abandonment");
@@ -227,4 +227,49 @@ test("intent score payloads carry raw dimensions and calibration state", () => {
   assert.equal(score.build_mode, "production");
   assert.deepEqual(score.velocity_floor_state, { status: "calibrated", floorDegPerSec: 300 });
   assert.equal(score.timing_offset_ms, 0);
+});
+
+test("an uncalibrated production config is refused at construction, not at play time", () => {
+  const config = defaultConfig("production"); // floors uncalibrated
+  const sink = new CapturingSink();
+  assert.throws(
+    () =>
+      new NealSpinTutorialController({ config, sink, sessionId: "s", sessionStartMs: 0 }),
+    /production build requires calibrated velocity floors.*touch.*controller/,
+  );
+  // A calibration build with the same floors is a legitimate configuration.
+  const calibration = defaultConfig("calibration");
+  new NealSpinTutorialController({ config: calibration, sink, sessionId: "s", sessionStartMs: 0 });
+  // Partially calibrated production still refuses, naming the missing source.
+  const partial = defaultConfig("production");
+  partial.velocityFloor.touch = { status: "calibrated", floorDegPerSec: 300 };
+  assert.throws(
+    () => new NealSpinTutorialController({ config: partial, sink, sessionId: "s", sessionStartMs: 0 }),
+    /uncalibrated: controller/,
+  );
+});
+
+test("retry after a timing ghost reports how long the ghost was on screen", () => {
+  const { controller, sink } = makeController();
+  runAttempt(controller, 9900, CLEAN_SPIN, 10600); // ghost shown at 10600
+  controller.beginAttempt(context, 11350); // player watched for 750ms
+  controller.endAttempt(12000);
+  const reads = sink.ofType("Event_GhostOverlay_Read");
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].time_elapsed_before_retry_ms, 750);
+});
+
+test("no ghost read event when no ghost was shown", () => {
+  const { controller, sink } = makeController();
+  runAttempt(controller, 10050, rep(10, { d: 12, dt: 16 }), 10600); // path failure: no ghost
+  runAttempt(controller, 10050, CLEAN_SPIN, 10600);
+  assert.equal(sink.ofType("Event_GhostOverlay_Read").length, 0);
+});
+
+test("ghost read is reported once per shown ghost, not on later retries", () => {
+  const { controller, sink } = makeController();
+  runAttempt(controller, 9900, CLEAN_SPIN, 10600); // ghost
+  runAttempt(controller, 10050, CLEAN_SPIN, 10600); // retry 1: read reported
+  runAttempt(controller, 10050, CLEAN_SPIN, 10600); // retry 2: nothing new
+  assert.equal(sink.ofType("Event_GhostOverlay_Read").length, 1);
 });

@@ -10,10 +10,11 @@
 //      guess (Section 5). These are represented as explicit uncalibrated
 //      states, never as hardcoded numbers.
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PROVISIONAL_STAGE_1_TO_2_CONSECUTIVE_SUCCESSES = exports.MOTION_EPSILON_DEG = exports.HESITATION_PROMPT_SESSION_CAP = exports.HESITATION_PROMPT_OPACITY = exports.HESITATION_PROMPT_FONT_PT = exports.HESITATION_PROMPT_FADE_MS = exports.HESITATION_PROMPT_DURATION_MS = exports.TIMING_CALLOUT_FONT_PT = exports.TIMING_CALLOUT_DURATION_MS = exports.GHOST_OVERLAY_FADE_MS = exports.GHOST_OVERLAY_HOLD_MS = exports.LIVE_EXECUTION_WINDOW_MS = exports.ABANDONMENT_IDLE_MS = exports.HESITATION_MAX_COVERAGE_DEG = exports.HESITATION_STOP_MS = exports.BACKTRACK_TOLERANCE_DEG = exports.PAUSE_BRIDGE_MAX_MS = exports.DOMINANT_DIRECTION_MIN_RATIO = exports.MIN_EFFECTIVE_ROTATION_DEG = void 0;
+exports.NealSpinConfigurationError = exports.PROVISIONAL_STAGE_1_TO_2_CONSECUTIVE_SUCCESSES = exports.MOTION_EPSILON_DEG = exports.HESITATION_PROMPT_SESSION_CAP = exports.HESITATION_PROMPT_OPACITY = exports.HESITATION_PROMPT_FONT_PT = exports.HESITATION_PROMPT_FADE_MS = exports.HESITATION_PROMPT_DURATION_MS = exports.TIMING_CALLOUT_FONT_PT = exports.TIMING_CALLOUT_DURATION_MS = exports.GHOST_OVERLAY_FADE_MS = exports.GHOST_OVERLAY_HOLD_MS = exports.LIVE_EXECUTION_WINDOW_MS = exports.ABANDONMENT_IDLE_MS = exports.HESITATION_MAX_COVERAGE_DEG = exports.HESITATION_STOP_MS = exports.BACKTRACK_TOLERANCE_DEG = exports.PAUSE_BRIDGE_MAX_MS = exports.DOMINANT_DIRECTION_MIN_RATIO = exports.MIN_EFFECTIVE_ROTATION_DEG = void 0;
 exports.uncalibratedVelocityFloors = uncalibratedVelocityFloors;
 exports.computeVelocityFloorFromSuccesses = computeVelocityFloorFromSuccesses;
 exports.defaultConfig = defaultConfig;
+exports.assertConfigLaunchable = assertConfigLaunchable;
 // --- Specification values (TechSpec Section 1) -----------------------------
 // Minimum effective rotation for a valid path. Over-rotation past 360° is
 // accepted without penalty — there is deliberately no upper bound.
@@ -97,4 +98,27 @@ function defaultConfig(buildMode) {
         abandonmentIdleMs: exports.ABANDONMENT_IDLE_MS,
         motionEpsilonDeg: exports.MOTION_EPSILON_DEG,
     };
+}
+// An uncalibrated production build is a CONFIGURATION defect, and it fails
+// here — at initialization, against the build — never against the player.
+// (Gate review on ARS-NEAL-001: without this check, fail-closed classification
+// silently turned every valid production spin into Fail_Dexterity_Speed. The
+// classifier retains that fail-closed branch purely as defense in depth for
+// callers that bypass the controller; through the controller it is
+// unreachable, because construction refuses first.)
+class NealSpinConfigurationError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = "NealSpinConfigurationError";
+    }
+}
+exports.NealSpinConfigurationError = NealSpinConfigurationError;
+function assertConfigLaunchable(config) {
+    if (config.buildMode !== "production")
+        return;
+    const uncalibrated = Object.keys(config.velocityFloor).filter((source) => config.velocityFloor[source].status === "uncalibrated");
+    if (uncalibrated.length > 0) {
+        throw new NealSpinConfigurationError(`production build requires calibrated velocity floors; uncalibrated: ${uncalibrated.join(", ")}. ` +
+            "Set them from playtest data (computeVelocityFloorFromSuccesses) or ship a calibration build.");
+    }
 }

@@ -13,6 +13,7 @@
 //     payload throws instead of silently corrupting the calibration dataset.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.NealSpinTutorialController = void 0;
+const NealSpinCalibration_1 = require("./NealSpinCalibration");
 const NealSpinClassifier_1 = require("./NealSpinClassifier");
 const NealSpinIntentParser_1 = require("./NealSpinIntentParser");
 const NealSpinTelemetry_1 = require("./NealSpinTelemetry");
@@ -32,12 +33,18 @@ class NealSpinTutorialController {
         // Abandonment watch: armed by a failure, disarmed by the next attempt.
         this.lastFailure = null;
         this.abandonmentEmitted = false;
+        // When a timing ghost was shown for the previous attempt, the next retry
+        // reports how long it had been on screen (Event_GhostOverlay_Read).
+        this.ghostShownAtMs = null;
+        // An uncalibrated production config is refused here, at initialization —
+        // a configuration defect must fail against the build, not the player.
+        (0, NealSpinCalibration_1.assertConfigLaunchable)(args.config);
         this.config = args.config;
         this.sink = args.sink;
         this.sessionId = args.sessionId;
         this.sessionStartMs = args.sessionStartMs;
     }
-    beginAttempt(context) {
+    beginAttempt(context, nowMs) {
         if (this.active) {
             throw new Error("beginAttempt while an attempt is active: end it first");
         }
@@ -46,6 +53,15 @@ class NealSpinTutorialController {
         this.hesitationDetectedThisAttempt = false;
         this.recoveryFiredThisAttempt = false;
         this.promptShownThisAttempt = false;
+        // Did the player let the timing ghost display before retrying, or blow
+        // straight past it? Reported before the ghost is dismissed below.
+        if (this.ghostShownAtMs !== null) {
+            this.emit((0, NealSpinTelemetry_1.buildGhostOverlayReadEvent)({
+                sessionId: this.sessionId,
+                timeElapsedBeforeRetryMs: Math.max(0, nowMs - this.ghostShownAtMs),
+            }));
+            this.ghostShownAtMs = null;
+        }
         // A fresh attempt is an active retry: a stale timing ghost must not
         // survive into it.
         this.ghostOverlay.notifyRetryStarted();
@@ -164,6 +180,7 @@ class NealSpinTutorialController {
         }
         if (result === "Fail_Timing_Early" || result === "Fail_Timing_Late") {
             this.ghostOverlay.show(result, timingOffsetMs, nowMs);
+            this.ghostShownAtMs = nowMs;
             this.emit((0, NealSpinTelemetry_1.buildGhostOverlayShownEvent)({
                 sessionId: this.sessionId,
                 attemptNumber: this.attemptNumber,

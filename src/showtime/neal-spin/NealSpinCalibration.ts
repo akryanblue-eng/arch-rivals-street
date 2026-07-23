@@ -128,3 +128,30 @@ export function defaultConfig(buildMode: BuildMode): NealSpinConfig {
     motionEpsilonDeg: MOTION_EPSILON_DEG,
   };
 }
+
+// An uncalibrated production build is a CONFIGURATION defect, and it fails
+// here — at initialization, against the build — never against the player.
+// (Gate review on ARS-NEAL-001: without this check, fail-closed classification
+// silently turned every valid production spin into Fail_Dexterity_Speed. The
+// classifier retains that fail-closed branch purely as defense in depth for
+// callers that bypass the controller; through the controller it is
+// unreachable, because construction refuses first.)
+export class NealSpinConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NealSpinConfigurationError";
+  }
+}
+
+export function assertConfigLaunchable(config: NealSpinConfig): void {
+  if (config.buildMode !== "production") return;
+  const uncalibrated = (Object.keys(config.velocityFloor) as Array<
+    keyof VelocityFloorBySource
+  >).filter((source) => config.velocityFloor[source].status === "uncalibrated");
+  if (uncalibrated.length > 0) {
+    throw new NealSpinConfigurationError(
+      `production build requires calibrated velocity floors; uncalibrated: ${uncalibrated.join(", ")}. ` +
+        "Set them from playtest data (computeVelocityFloorFromSuccesses) or ship a calibration build.",
+    );
+  }
+}
